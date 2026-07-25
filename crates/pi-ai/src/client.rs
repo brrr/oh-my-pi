@@ -1,30 +1,36 @@
-//! Non-streaming Messages client.
+//! Messages client: non-streaming completion + SSE streaming.
 //!
-//! `POST {base}/v1/messages` with `stream: false`. The TS client only ships an
-//! SSE path (anthropic-client.ts forces `stream: true`), so the non-streaming
-//! parse is new code; the retry contract is a minimal-surface port of
+//! `POST {base}/v1/messages`. The retry contract is a minimal-surface port of
 //! `AnthropicMessagesClient` (anthropic-client.ts:88-121 / :223-294):
-//! maxRetries=2, retry on connection errors / 408 / 409 / 429 / 5xx,
+//! maxRetries=2, retry on connection errors / timeout / 408 / 409 / 429 / 5xx,
 //! `x-should-retry` overrides both ways, `retry-after-ms` then `retry-after`
 //! (seconds form; HTTP-date form is ignored) then exponential backoff
-//! `min(0.5·2^n, 8s)` with 25% jitter, 600s pre-response timeout.
+//! `min(0.5·2^n, 8s)` with 25% jitter. The 600s deadline guards **until the
+//! response head arrives** (TS parity) — established SSE streams are not
+//! killed by it. Retries stop once a stream is established; mid-stream
+//! failures surface as a terminal `error` event (stream resume is WP-1.6
+//! hardening).
 //!
-//! Not ported (yet): caller abort wiring (`AiError::Aborted` reserved for
-//! WP-1.1b), custom fetch/TLS injection (Bun-specific), lazy request handles
-//! (TS test seam — Rust tests use serialization fixtures instead).
+//! Not ported (yet): custom fetch/TLS injection (Bun-specific), lazy request
+//! handles (TS test seam — Rust tests use serialization fixtures instead).
 
 use std::{
 	sync::Arc,
 	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use tokio_util::sync::CancellationToken;
+
 use crate::{
 	AiError,
 	auth::AnthropicAuthConfig,
+	builder::StreamingBuilder,
 	convert::{RequestMeta, convert_response, emit_nonstream_events, error_to_message},
-	message::AssistantMessage,
-	stream::AssistantMessageEventStream,
-	wire::{ErrorEnvelope, MessageCreateParams, ResponseMessage},
+	event::AssistantMessageEvent,
+	message::{AssistantMessage, StopReason},
+	sse::{SseParser, parse_message_event, stream_error_message},
+	stream::{AssistantMessageEventStream, EventSink},
+	wire::{ErrorEnvelope, MessageCreateParams, RawMessageStreamEvent, ResponseMessage},
 };
 
 /// Wire-family id stamped on every produced [`AssistantMessage`].
@@ -49,7 +55,6 @@ impl Client {
 	#[must_use]
 	pub fn new(auth: AnthropicAuthConfig, provider: impl Into<String>) -> Self {
 		let http = reqwest::Client::builder()
-			.timeout(DEFAULT_TIMEOUT)
 			.build()
 			.expect("reqwest client construction cannot fail with static config");
 		Self {
@@ -85,28 +90,9 @@ impl Client {
 	pub async fn complete(&self, params: &MessageCreateParams) -> Result<ResponseMessage, AiError> {
 		let mut request = params.clone();
 		request.stream = Some(false);
-		let url = self.auth.messages_url(self.beta_query);
-
-		let mut attempt: u32 = 0;
-		loop {
-			let failure = match self.send_once(&url, &request).await {
-				Ok(response) => return Ok(response),
-				Err(failure) => failure,
-			};
-			let retriable = match &failure {
-				RequestFailure::Transport(_) => attempt < self.max_retries,
-				RequestFailure::Http { retry_hint, status, .. } => {
-					let default_retry = matches!(*status, 408 | 409 | 429) || *status >= 500;
-					attempt < self.max_retries && retry_hint.unwrap_or(default_retry)
-				},
-				RequestFailure::Decode(_) => false,
-			};
-			if !retriable {
-				return Err(failure.into_error());
-			}
-			tokio::time::sleep(failure.retry_delay(attempt)).await;
-			attempt += 1;
-		}
+		let response = self.open_with_retry(&request).await?;
+		let body = response.text().await.map_err(AiError::Connection)?;
+		serde_json::from_str(&body).map_err(AiError::Decode)
 	}
 
 	/// One completion converted into the harness [`AssistantMessage`].
@@ -121,34 +107,108 @@ impl Client {
 		let meta = self.request_meta(params);
 		let started = Instant::now();
 		let result = self.complete(params).await;
-		let meta = RequestMeta {
-			duration: Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
-			..meta
-		};
+		let meta = RequestMeta { duration: Some(elapsed_ms(started)), ..meta };
 		result.map(|response| convert_response(&response, &meta))
 	}
 
-	/// Event-stream entry point. WP-1.1a: performs the non-streaming call and
-	/// synthesizes the contract event sequence (a request failure becomes a
-	/// single `error` event). WP-1.1b replaces the internals with true SSE
-	/// behind this same signature.
+	/// SSE streaming entry point producing the contract event sequence.
 	#[must_use]
 	pub fn stream(&self, params: &MessageCreateParams) -> AssistantMessageEventStream {
+		self.stream_with_cancel(params, CancellationToken::new())
+	}
+
+	/// Like [`Client::stream`], but the caller can cancel mid-stream:
+	/// cancellation emits a terminal `error` event with reason `aborted`,
+	/// keeping any content accumulated so far on the message.
+	#[must_use]
+	pub fn stream_with_cancel(
+		&self,
+		params: &MessageCreateParams,
+		cancel: CancellationToken,
+	) -> AssistantMessageEventStream {
 		let (sink, stream) = AssistantMessageEventStream::channel();
 		let client = self.clone();
-		let params = params.clone();
+		let mut request = params.clone();
 		tokio::spawn(async move {
-			let meta = client.request_meta(&params);
-			let message = match client.complete_message(&params).await {
-				Ok(message) => message,
-				Err(error) => error_to_message(&error, &meta),
-			};
-			let message = Arc::new(message);
-			for event in emit_nonstream_events(&message) {
-				sink.push(event);
-			}
+			request.stream = Some(true);
+			client.run_stream(&request, &sink, &cancel).await;
 		});
 		stream
+	}
+
+	async fn run_stream(
+		&self,
+		request: &MessageCreateParams,
+		sink: &EventSink,
+		cancel: &CancellationToken,
+	) {
+		let meta = self.request_meta(request);
+		let started = Instant::now();
+		let mut builder = StreamingBuilder::new(&meta);
+		// TS pushes `start` before the first byte arrives (anthropic.ts:2027).
+		sink.push(AssistantMessageEvent::Start { partial: builder.snapshot() });
+
+		let mut response = match self.open_with_retry(request).await {
+			Ok(response) => response,
+			Err(error) => {
+				// The request never became a stream: standard error turn.
+				let message = Arc::new(error_to_message(&error, &meta));
+				for event in emit_nonstream_events(&message) {
+					sink.push(event);
+				}
+				return;
+			},
+		};
+
+		let mut parser = SseParser::new();
+		let mut saw_first_content = false;
+		loop {
+			let chunk = tokio::select! {
+				biased;
+				() = cancel.cancelled() => {
+					builder.set_duration(elapsed_ms(started));
+					let (_, events) =
+						builder.fail(StopReason::Aborted, AiError::Aborted.to_string());
+					push_all(sink, events);
+					return;
+				},
+				chunk = response.chunk() => chunk,
+			};
+			match chunk {
+				Ok(Some(bytes)) => {
+					for frame in parser.push(&bytes) {
+						if frame.event.as_deref() == Some("error") {
+							builder.set_duration(elapsed_ms(started));
+							let (_, events) =
+								builder.fail(StopReason::Error, stream_error_message(&frame.data));
+							push_all(sink, events);
+							return;
+						}
+						let Some(raw) = parse_message_event(&frame) else {
+							continue;
+						};
+						if !saw_first_content
+							&& matches!(raw, RawMessageStreamEvent::ContentBlockStart { .. })
+						{
+							saw_first_content = true;
+							builder.set_ttft_once(elapsed_ms(started));
+						}
+						push_all(sink, builder.on_event(raw));
+					}
+				},
+				Ok(None) => break,
+				Err(error) => {
+					builder.set_duration(elapsed_ms(started));
+					let (_, events) = builder
+						.fail(StopReason::Error, format!("Connection error while streaming: {error}"));
+					push_all(sink, events);
+					return;
+				},
+			}
+		}
+		builder.set_duration(elapsed_ms(started));
+		let (_, events) = builder.finish();
+		push_all(sink, events);
 	}
 
 	fn request_meta(&self, params: &MessageCreateParams) -> RequestMeta {
@@ -161,11 +221,39 @@ impl Client {
 		}
 	}
 
-	async fn send_once(
+	/// Send until a 2xx response head arrives, applying the retry policy.
+	/// Non-2xx bodies are consumed for the error envelope.
+	async fn open_with_retry(
+		&self,
+		request: &MessageCreateParams,
+	) -> Result<reqwest::Response, AiError> {
+		let url = self.auth.messages_url(self.beta_query);
+		let mut attempt: u32 = 0;
+		loop {
+			let failure = match self.send_head(&url, request).await {
+				Ok(response) => return Ok(response),
+				Err(failure) => failure,
+			};
+			let retriable = match &failure {
+				RequestFailure::Transport(_) | RequestFailure::Timeout => attempt < self.max_retries,
+				RequestFailure::Http { retry_hint, status, .. } => {
+					let default_retry = matches!(*status, 408 | 409 | 429) || *status >= 500;
+					attempt < self.max_retries && retry_hint.unwrap_or(default_retry)
+				},
+			};
+			if !retriable {
+				return Err(failure.into_error());
+			}
+			tokio::time::sleep(failure.retry_delay(attempt)).await;
+			attempt += 1;
+		}
+	}
+
+	async fn send_head(
 		&self,
 		url: &str,
 		request: &MessageCreateParams,
-	) -> Result<ResponseMessage, RequestFailure> {
+	) -> Result<reqwest::Response, RequestFailure> {
 		let mut builder = self
 			.http
 			.post(url)
@@ -178,15 +266,23 @@ impl Client {
 			builder.header("x-api-key", self.auth.api_key.clone())
 		};
 
-		let response = builder.send().await.map_err(RequestFailure::Transport)?;
+		let response = tokio::time::timeout(DEFAULT_TIMEOUT, builder.send())
+			.await
+			.map_err(|_elapsed| RequestFailure::Timeout)?
+			.map_err(|error| {
+				if error.is_timeout() {
+					RequestFailure::Timeout
+				} else {
+					RequestFailure::Transport(error)
+				}
+			})?;
 		let status = response.status().as_u16();
-		let headers = response.headers().clone();
-		let body = response.text().await.map_err(RequestFailure::Transport)?;
-
 		if (200..300).contains(&status) {
-			return serde_json::from_str(&body).map_err(RequestFailure::Decode);
+			return Ok(response);
 		}
 
+		let headers = response.headers().clone();
+		let body = response.text().await.unwrap_or_default();
 		let retry_hint = headers
 			.get("x-should-retry")
 			.and_then(|value| value.to_str().ok())
@@ -218,8 +314,15 @@ impl Client {
 	}
 }
 
+fn push_all(sink: &EventSink, events: Vec<AssistantMessageEvent>) {
+	for event in events {
+		sink.push(event);
+	}
+}
+
 enum RequestFailure {
 	Transport(reqwest::Error),
+	Timeout,
 	Http {
 		status:      u16,
 		body:        String,
@@ -228,21 +331,19 @@ enum RequestFailure {
 		retry_after: Option<Duration>,
 		request_id:  Option<String>,
 	},
-	Decode(serde_json::Error),
 }
 
 impl RequestFailure {
 	fn into_error(self) -> AiError {
 		match self {
-			Self::Transport(error) if error.is_timeout() => AiError::ConnectionTimeout,
 			Self::Transport(error) => AiError::Connection(error),
+			Self::Timeout => AiError::ConnectionTimeout,
 			Self::Http { status, body, parsed, request_id, .. } => AiError::Api {
 				status,
 				message: format!("{status} {}", body.trim()),
 				body: parsed,
 				request_id,
 			},
-			Self::Decode(error) => AiError::Decode(error),
 		}
 	}
 
@@ -257,6 +358,10 @@ impl RequestFailure {
 		let base = f64::from(1u32 << attempt.min(8)).mul_add(0.5, 0.0).min(8.0);
 		Duration::from_secs_f64(base * fastrand::f64().mul_add(-0.25, 1.0))
 	}
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+	u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn unix_millis() -> i64 {

@@ -1,6 +1,6 @@
 # omp-headless · provider↔loop 事件接口契约
 
-> Contract-Version: 1（2026-07-25，WP-1.1a 钉死）
+> Contract-Version: 1.1（2026-07-26，WP-1.1b：接口本体不变，补 SSE 流式细则 + 附录 B 简化清单）
 > Rust 权威实现：`crates/pi-ai/src/event.rs`（事件）+ `crates/pi-ai/src/message.rs`（消息模型）
 > TS 对照源：`packages/ai/src/types.ts:900-923`（事件联合）/ `:712` `AssistantMessage` / `packages/ai/src/utils/event-stream.ts:147`（流容器）
 > 变更纪律见 §9 —— **本契约的任何增删改（含 serde 名/tag 值）须先走宪章条款 2 plan 拍板，代码与文档同 commit 更新。**
@@ -54,8 +54,8 @@
 | `response_id` | `responseId` | :727 | ✅ | 响应 `id` |
 | `timestamp` / `duration` | 同名 | :756-757 | ✅ | 请求起点 ms / 时长 ms |
 | `error_message` / `error_status` | `errorMessage`/`errorStatus` | :739/:743 | ✅ | 错误路径填充 |
-| `stop_details` | `stopDetails` | :738 | ⏸ 1.1b | SSE `message_delta.stop_details` 才有 |
-| `ttft` | `ttft` | :758 | ⏸ 1.1b | 首 token 时延需流式 |
+| `stop_details` | `stopDetails` | :738 | ✅ 1.1b | SSE `message_delta.stop_details`（error 类 stop 时填充） |
+| `ttft` | `ttft` | :758 | ✅ 1.1b | 首 content_block_start 时刻记录 |
 | `context_snapshot` / `retry_recovery` / `upstream_provider` / `tool_call_abort_messages` / `error_id` / `disabled_features` / `provider_payload` | camelCase 同名 | :725-755 | ⏸ 后续 | `retryRecovery`/`providerPayload` 在 Rust 侧为 opaque `Value`（harness 专属结构不强类型化） |
 
 其余角色（`UserMessage`/`DeveloperMessage`/`ToolResultMessage`/`Message` untagged by `role`）已同步定义为请求侧上下文最小面。
@@ -105,7 +105,9 @@
 
 - `start`（content 空）→ 逐块：text/thinking 发 `*_start`（空壳块入 partial）→ 单发一个全量 `*_delta` → `*_end`；toolcall 三连（start 时 arguments=`{}`，delta=完整 JSON 串）；image 仅 `image_end`；redactedThinking/fallback 不发事件仅入 partial → `done`。
 - 所有 partial 携带终值的 usage/stop 元数据（非流式无中间态可言，文档化为契约行为）。
-- 1.1b 真 SSE 接管后，多 delta 细粒度化，但事件种类/字段/不变量不变。
+- **WP-1.1b 起 `Client::stream()` 为真 SSE 路径**（`sse.rs` 帧解析 + `builder.rs` 状态机）：delta 细粒度化、partial 渐进（usage 从 message_start 起有值，message_delta 到达时覆写 output 等字段并重算 total）、ttft/duration 真实记录；`emit_nonstream_events` 仍是 `complete()` 消费者与错误短路路径的合成器。事件种类/字段/不变量不变。
+- 流式补充语义：SSE `error` 帧 / 传输层断连 / 取消（`stream_with_cancel`）→ 终止 `error` 事件，**已累积内容保留在 error.error.content**；`message_stop` 之前断流 → dangling 块补发 `*_end` 后按当前 stop_reason 收终（TS anomaly 语义）；`message_start` 都没到 → error("stream ended before message_start")。
+- 背压条款：流容器为无界队列（TS 对齐），生产者永不阻塞；SSE 逐帧生产的内存水位 = 未消费事件 × Arc 快照（O(指针)），风险与 TS 同级。真背压（有界 + 生产者暂停）留 WP-1.6 硬化议题。
 
 ## 8. 错误映射
 
@@ -124,6 +126,7 @@
 | 版本 | 日期 | 变更 | WP |
 |---|---|---|---|
 | 1 | 2026-07-25 | 初版钉死（13 变体 + 消息模型 + 映射表 + 合成序列规范） | 1.1a |
+| 1.1 | 2026-07-26 | 接口本体不变；§7 补 SSE 流式细则与背压条款；新增附录 B（流式简化清单）；`stream_with_cancel` 取消语义 | 1.1b |
 
 ## 附录 A · DeepSeek Anthropic 兼容端点注意点（L2 实测 2026-07-25）
 
@@ -131,4 +134,18 @@
 - 可用模型 `deepseek-v4-pro` / `deepseek-v4-flash`（`deepseek-chat` 已下线，400 明示）；flash 默认输出 thinking 块（signature=消息 id），max_tokens 需给足否则 `max_tokens` 截断在 thinking 块内；
 - 认证 `x-api-key` 生效；`anthropic-version` 头照发无害；`?beta=true` query **不发**（官方端点差异，client flag 预留）；
 - usage 含私有字段 `service_tier`（忽略）、缺 `cache_creation`/`server_tool_use`（Option 容忍）；
-- 已知延期：tool schema 清洗（`anthropic.ts:3909` `normalizeAnthropicToolSchemaNode`）归 WP-1.2；SSE/取消贯穿/背压条款归 WP-1.1b。
+- 已知延期：tool schema 清洗（`anthropic.ts:3909` `normalizeAnthropicToolSchemaNode`）归 WP-1.2。
+- 流式实测（2026-07-26）：兼容层 SSE 帧完整（message_start/content_block_*/message_delta/message_stop + ping + signature_delta，signature=消息 id 经 signature_delta 单帧下发）；真实 transcript 入 `crates/pi-ai/tests/fixtures/sse_deepseek_v4_flash.sse` 锁形。
+
+## 附录 B · WP-1.1b 流式简化清单（vs TS anthropic.ts，均为刻意取舍）
+
+| 项 | TS 行为 | Rust 1.1b | 归属 |
+|---|---|---|---|
+| thinking envelope unwrap | `unwrapAnthropicThinkingEnvelope`（Harmony 泄漏清洗） | 不做 | 按需归 1.6 |
+| 工具参数流式解析 | throttled 增量 parse 进 arguments | arguments 保持 `{}` 至块关闭（partial JSON 仍经 toolcall_delta 下发）；关闭时一次 parse，失败落 `{__parseError,__rawJson}`（与 TS 兜底同形） | 定案 |
+| JSON repair | `parseJsonWithRepair` | 仅 serde 严格 parse + 兜底形状 | 按需归 1.6 |
+| server-side fallback | opted-in 时采纳 fallback 模型/成本 | fallback 块一律忽略（= TS 未 opt-in 分支） | 定案（barm 场景不用该 beta） |
+| spliced envelope 重连 | 去重重放 | 重复 message_start/index 直接跳过 | 归 1.6（断流恢复议题） |
+| 流建立后 provider 重试 | 首内容前可重试 | 不重试，直接 error 事件 | 归 1.6 |
+| idle watchdog / first-event timeout | StreamTimeoutError 双看门狗 | 无（仅预响应 600s） | 归 1.6 |
+| cost 计算 | calculateCost | 全 0 | 归 catalog 层 WP |
