@@ -3615,6 +3615,7 @@ dependencies = [
  "pi-walker",
  "pi_uu_diff",
  "pi_uu_grep",
+ "portable-pty",
  "regex",
  "serde",
  "serde_json",

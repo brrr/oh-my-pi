@@ -1,8 +1,10 @@
 pub mod cancel;
+pub mod chunk_pump;
 mod coreutils;
 mod fd;
 pub mod minimizer;
 pub mod process;
+pub mod pty;
 pub mod shell;
 mod which;
 #[cfg(windows)]
