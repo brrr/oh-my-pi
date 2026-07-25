@@ -34,4 +34,8 @@ pub enum AiError {
 	/// Response body did not parse as the expected wire shape.
 	#[error("invalid response: {0}")]
 	Decode(#[from] serde_json::Error),
+	/// The event producer went away without pushing a terminal event
+	/// (TS: "Stream ended without a final result").
+	#[error("stream ended without a final result")]
+	StreamEnded,
 }
