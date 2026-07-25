@@ -1,0 +1,26 @@
+{
+  "id": "msg_01UnknownFixture000001",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-future",
+  "content": [
+    {
+      "type": "banana",
+      "peel": true,
+      "payload": {
+        "nested": [1, 2, 3]
+      }
+    },
+    {
+      "type": "text",
+      "text": "Still parsed."
+    }
+  ],
+  "stop_reason": "grape",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 1,
+    "output_tokens": 2,
+    "service_tier": "standard"
+  }
+}

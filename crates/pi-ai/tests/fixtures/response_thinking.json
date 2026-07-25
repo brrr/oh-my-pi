@@ -1,0 +1,27 @@
+{
+  "id": "msg_01ThinkingFixture000001",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "Let me reason about this step by step.",
+      "signature": "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds"
+    },
+    {
+      "type": "redacted_thinking",
+      "data": "EmwKAhgBEgy3va3pzix/LafPsn4aDFIT2Xlxh0L5L8rLVyIw"
+    },
+    {
+      "type": "text",
+      "text": "The answer is 42."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 55,
+    "output_tokens": 120
+  }
+}
