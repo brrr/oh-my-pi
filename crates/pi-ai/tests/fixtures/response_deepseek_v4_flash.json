@@ -1,0 +1,26 @@
+{
+  "id": "e2eb80fd-5c00-4edc-bdeb-19f91e88a179",
+  "type": "message",
+  "role": "assistant",
+  "model": "deepseek-v4-flash",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "We are asked to reply with exactly \"pong\". So the response should be just that word.",
+      "signature": "e2eb80fd-5c00-4edc-bdeb-19f91e88a179"
+    },
+    {
+      "type": "text",
+      "text": "pong"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 23,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "service_tier": "standard"
+  }
+}

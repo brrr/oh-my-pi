@@ -97,6 +97,27 @@ fn tolerates_unknown_variants() {
 	assert_eq!(message.usage.input_tokens, Some(1));
 }
 
+/// Real body captured from the `DeepSeek` Anthropic-compatible endpoint
+/// (`examples/complete.rs`, 2026-07-25): thinking model, signature = message
+/// id, private `service_tier` usage field, no cache/server sections.
+#[test]
+fn parses_deepseek_v4_flash_response() {
+	let message: ResponseMessage =
+		serde_json::from_str(&load("response_deepseek_v4_flash.json")).unwrap();
+	assert_eq!(message.model.as_deref(), Some("deepseek-v4-flash"));
+	assert_eq!(message.stop_reason, Some(WireStopReason::Known(KnownStopReason::EndTurn)));
+	let ResponseContentBlock::Thinking { signature, .. } = known(&message.content[0]) else {
+		panic!("expected thinking block");
+	};
+	assert_eq!(signature.as_deref(), Some(message.id.as_str()));
+	let ResponseContentBlock::Text { text } = known(&message.content[1]) else {
+		panic!("expected text block");
+	};
+	assert_eq!(text, "pong");
+	assert_eq!(message.usage.output_tokens, Some(23));
+	assert!(message.usage.cache_creation.is_none());
+}
+
 #[test]
 fn parses_all_sse_event_kinds() {
 	let frames = [
