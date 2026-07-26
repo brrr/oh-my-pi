@@ -4,7 +4,7 @@
 # allowed to touch N-API. Run from the repo root; exits non-zero on violation.
 set -euo pipefail
 
-CORE_CRATES=(pi-shell pi-ai pi-grep pi-diff pi-ast pi-term pi-tools pi-session pi-agent)
+CORE_CRATES=(pi-shell pi-ai pi-grep pi-diff pi-ast pi-term pi-tools pi-session pi-agent omp-headless)
 
 for crate in "${CORE_CRATES[@]}"; do
 	if cargo tree -p "$crate" -e normal | grep -qi '\bnapi\b'; then

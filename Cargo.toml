@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/pi-*", "crates/vendor/*"]
+members = ["crates/pi-*", "crates/omp-headless", "crates/vendor/*"]
 exclude = ["crates/vendor/brush-core", "crates/vendor/brush-builtins"]
 resolver = "3"
 
@@ -185,8 +185,14 @@ pi-shell = { path = "crates/pi-shell" }
 pi-term = { path = "crates/pi-term" }
 pi-tools = { path = "crates/pi-tools" }
 pi-walker = { path = "crates/pi-walker" }
+pi-session = { path = "crates/pi-session" }
 brush-core = { path = "crates/vendor/brush-core" }
 brush-builtins = { path = "crates/vendor/brush-builtins" }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ACP (Agent Client Protocol) — headless omp 作为标准 ACP agent (WP-1.5)
+# ──────────────────────────────────────────────────────────────────────────────
+agent-client-protocol = "2.0.0"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Async Runtime & Concurrency

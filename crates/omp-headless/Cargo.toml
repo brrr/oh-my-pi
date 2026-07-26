@@ -1,0 +1,33 @@
+[package]
+name = "omp-headless"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "omp-headless"
+path = "src/main.rs"
+
+[dependencies]
+# ACP 骨架（stdio JSON-RPC agent 侧）
+agent-client-protocol = { workspace = true }
+
+# 纯核心复用：agent-loop / provider / 六工具 / session journal / cancel
+pi-agent = { workspace = true }
+pi-ai = { workspace = true }
+pi-tools = { workspace = true }
+pi-session = { workspace = true }
+pi-shell = { workspace = true }
+
+# 运行时 + 序列化 + CLI + 错误
+tokio = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+regex = { workspace = true }
+
+[lints]
+workspace = true
