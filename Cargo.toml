@@ -176,6 +176,7 @@ too_many_lines = "allow"     # Arbitrary limits don't account for necessary comp
 # Internal Libraries
 # ──────────────────────────────────────────────────────────────────────────────
 pi-ast = { path = "crates/pi-ast" }
+pi-grep = { path = "crates/pi-grep" }
 pi-iso = { path = "crates/pi-iso" }
 pi-shell = { path = "crates/pi-shell" }
 pi-walker = { path = "crates/pi-walker" }

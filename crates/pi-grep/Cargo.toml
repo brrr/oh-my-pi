@@ -1,0 +1,33 @@
+# Ripgrep-backed search engine + glob compilation, extracted from pi-natives as a
+# pure Rust core (no N-API). pi-natives keeps only a thin napi shell over this.
+# Entry points: `pi_grep::search` / `pi_grep::has_match` / `pi_grep::grep`; glob
+# helpers live in `pi_grep::glob`.
+[package]
+name = "pi-grep"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+globset.workspace = true
+grep-matcher.workspace = true
+grep-pcre2.workspace = true
+grep-regex.workspace = true
+grep-searcher.workspace = true
+parking_lot.workspace = true
+regex.workspace = true
+smallvec.workspace = true
+pi-shell.workspace = true
+pi-walker.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+libc.workspace = true

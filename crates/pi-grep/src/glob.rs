@@ -1,8 +1,8 @@
-//! Shared glob-pattern helpers used by both [`crate::glob`] and
-//! [`crate::grep`].
+//! Shared glob-pattern helpers used by both the grep engine and the
+//! `pi-natives` filesystem-discovery shell.
 
+use anyhow::{Result, anyhow};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use napi::bindgen_prelude::*;
 
 /// Compiled glob filter with cheap paths for common basename/extension queries.
 pub struct CompiledGlob {
@@ -97,11 +97,11 @@ pub fn compile_glob(glob: &str, recursive: bool) -> Result<CompiledGlob> {
 	let parsed = GlobBuilder::new(&pattern)
 		.literal_separator(true)
 		.build()
-		.map_err(|err| Error::from_reason(format!("Invalid glob pattern: {err}")))?;
+		.map_err(|err| anyhow!("Invalid glob pattern: {err}"))?;
 	builder.add(parsed);
 	let glob_set = builder
 		.build()
-		.map_err(|err| Error::from_reason(format!("Failed to build glob matcher: {err}")))?;
+		.map_err(|err| anyhow!("Failed to build glob matcher: {err}"))?;
 	Ok(CompiledGlob { fast_path: classify_fast_path(&pattern), glob_set })
 }
 

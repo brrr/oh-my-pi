@@ -24,7 +24,7 @@ use napi_derive::napi;
 
 // Re-export entry types so existing `glob::FileType` / `glob::GlobMatch` paths still work.
 pub use crate::iofs::{FileType, GlobMatch};
-use crate::{glob_util, iofs, task};
+use crate::{iofs, task};
 
 /// Input options for `glob`, including traversal, filtering, and cancellation.
 #[napi(object)]
@@ -171,10 +171,10 @@ fn run_glob(
 	on_match: Option<&ThreadsafeFunction<GlobMatch>>,
 	ct: task::CancelToken,
 ) -> Result<GlobResult> {
-	let walk_glob_pattern = glob_util::build_glob_pattern(&config.pattern, config.recursive);
+	let walk_glob_pattern = pi_grep::glob::build_glob_pattern(&config.pattern, config.recursive);
 	// Non-recursive patterns bound the walk: `dir/*` must not traverse the
 	// entire subtree under `dir` to match only direct children.
-	let walk_depth_limit = glob_util::walk_depth_bound(&walk_glob_pattern);
+	let walk_depth_limit = pi_grep::glob::walk_depth_bound(&walk_glob_pattern);
 	let walk_glob = pi_walker::CompiledWalkGlob::new([walk_glob_pattern])
 		.map_err(|err| Error::from_reason(format!("Invalid glob pattern: {err}")))?;
 	if config.max_results == 0 {

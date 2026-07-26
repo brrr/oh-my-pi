@@ -14,7 +14,7 @@ use pi_ast::{
 	ops::{self as shared_ops},
 };
 
-use crate::{glob_util, iofs, task};
+use crate::{iofs, task};
 
 const DEFAULT_FIND_LIMIT: u32 = 50;
 
@@ -489,7 +489,7 @@ fn collect_candidates(
 	let mut filter =
 		pi_walker::WalkFilter::files_only().node_modules_unless_mentioned(mentions_node_modules);
 	if let Some(glob) = glob.map(str::trim).filter(|value| !value.is_empty()) {
-		let pattern = glob_util::build_glob_pattern(glob, false);
+		let pattern = pi_grep::glob::build_glob_pattern(glob, false);
 		let compiled = pi_walker::CompiledWalkGlob::new([pattern])
 			.map_err(|err| Error::from_reason(format!("Invalid glob pattern: {err}")))?;
 		filter = filter.glob(compiled);

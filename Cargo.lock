@@ -3531,6 +3531,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pi-grep"
+version = "17.0.8"
+dependencies = [
+ "anyhow",
+ "globset",
+ "grep-matcher",
+ "grep-pcre2",
+ "grep-regex",
+ "grep-searcher",
+ "libc",
+ "parking_lot",
+ "pi-shell",
+ "pi-walker",
+ "regex",
+ "smallvec",
+]
+
+[[package]]
 name = "pi-iso"
 version = "17.0.8"
 dependencies = [
@@ -3554,11 +3572,6 @@ dependencies = [
  "clipboard-win",
  "flume",
  "fontdue",
- "globset",
- "grep-matcher",
- "grep-pcre2",
- "grep-regex",
- "grep-searcher",
  "html-to-markdown-rs",
  "icy_sixel",
  "ignore",
@@ -3571,6 +3584,7 @@ dependencies = [
  "parking_lot",
  "phf 0.13.1",
  "pi-ast",
+ "pi-grep",
  "pi-iso",
  "pi-shell",
  "pi-uutils-ctx",
