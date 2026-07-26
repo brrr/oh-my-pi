@@ -10,12 +10,15 @@
 //! finally strips dangling `toolCall` blocks (an assistant `toolCall` with no
 //! paired `toolResult` on the resolved path).
 //!
-//! Deferred (out of WP-1.3 scope, faithful to the pinned surface): transcript
-//! mode, provider remote-compaction replacement history, `retryRecovery` skip,
-//! and synthesizing `branchSummary` messages (a `branch_summary` entry stays an
-//! opaque unknown and contributes no message). Fixtures avoid these so the
-//! `loadSessionMessagesReadOnly` parity holds; they are logged here so a later
-//! WP that needs them knows exactly what is missing.
+//! WP-1.6 (B7) added: `branchSummary` message synthesis (a `branch_summary`
+//! entry with a non-empty summary emits a `branchSummary` message) and the
+//! `retryRecovery` skip (a recovered assistant turn is dropped from the LLM
+//! view, session-context.ts:311).
+//!
+//! Deferred (out of WP-1.3/1.6 scope, faithful to the pinned surface):
+//! transcript mode and provider remote-compaction replacement history. Fixtures
+//! avoid these so the `loadSessionMessagesReadOnly` parity holds; they are
+//! logged here so a later WP that needs them knows exactly what is missing.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -85,7 +88,6 @@ pub enum ContextMessage {
 	Standard(Message),
 	CompactionSummary(CompactionSummaryMessage),
 	Custom(CustomMessage),
-	#[allow(dead_code, reason = "modeled for the union; branch summaries deferred (see module doc)")]
 	BranchSummary(BranchSummaryMessage),
 }
 
@@ -164,7 +166,7 @@ pub fn build_session_context(entries: &[SessionEntry], leaf_id: Option<&str>) ->
 			},
 			KnownEntry::Compaction(e) => compaction = Some(e),
 			KnownEntry::ModeChange(e) => mode.clone_from(&e.mode),
-			KnownEntry::CustomMessage(_) => {},
+			KnownEntry::CustomMessage(_) | KnownEntry::BranchSummary(_) => {},
 		}
 	}
 
@@ -214,14 +216,28 @@ fn compaction_summary_message(comp: &crate::entries::CompactionEntry) -> Compact
 	}
 }
 
-/// Emit the message(s) for one path entry. Only `message` and `custom_message`
-/// entries contribute; settings entries and opaque unknowns are silent.
+/// Emit the message(s) for one path entry. Only `message`, `custom_message`,
+/// and `branch_summary` entries contribute; settings entries and opaque
+/// unknowns are silent.
 fn append_message(entry: &SessionEntry, out: &mut Vec<ContextMessage>) {
 	let SessionEntry::Known(known) = entry else {
 		return;
 	};
 	match known {
-		KnownEntry::Message(e) => out.push(ContextMessage::Standard(e.message.clone())),
+		KnownEntry::Message(e) => {
+			// retryRecovery skip (session-context.ts:311): a recovered assistant
+			// turn is dropped from the LLM context (non-transcript path).
+			if let Message::Assistant(a) = &e.message
+				&& a
+					.retry_recovery
+					.as_ref()
+					.and_then(|r| r.get("status").and_then(Value::as_str))
+					== Some("recovered")
+			{
+				return;
+			}
+			out.push(ContextMessage::Standard(e.message.clone()));
+		},
 		KnownEntry::CustomMessage(e) => out.push(ContextMessage::Custom(CustomMessage {
 			custom_type: e.custom_type.clone(),
 			content:     e.content.clone(),
@@ -230,6 +246,13 @@ fn append_message(entry: &SessionEntry, out: &mut Vec<ContextMessage>) {
 			attribution: e.attribution,
 			timestamp:   iso_to_unix_ms(&e.timestamp).unwrap_or_default(),
 		})),
+		KnownEntry::BranchSummary(e) if !e.summary.is_empty() => {
+			out.push(ContextMessage::BranchSummary(BranchSummaryMessage {
+				summary:   e.summary.clone(),
+				from_id:   e.from_id.clone(),
+				timestamp: iso_to_unix_ms(&e.timestamp).unwrap_or_default(),
+			}));
+		},
 		_ => {},
 	}
 }

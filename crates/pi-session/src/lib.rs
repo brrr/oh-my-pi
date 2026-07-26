@@ -7,19 +7,19 @@
 //! `loadSessionMessagesReadOnly`. The message model itself is reused from
 //! [`pi_ai::message`] (already 1:1 with the TS types) rather than redefined.
 //!
-//! # Scope (v3 only + read/write both directions)
+//! # Scope (v1/v2/v3 read, v3 write)
 //!
 //! In scope: the fixed-width [`title_slot`], the strongly-typed [`entries`]
-//! (with opaque passthrough for every other type), the v3 [`loader`] +
-//! superseded-compaction elision, the non-transcript [`context`] rebuild, and
-//! the append-only [`writer`].
+//! (with opaque passthrough for every other type), the [`loader`] with v1/v2→v3
+//! in-memory migration (WP-1.6 B4), superseded-compaction elision,
+//! `blob:sha256` dereference (B5), the ≥8 MiB streaming path (B6), the
+//! non-transcript [`context`] rebuild with `branchSummary` synthesis +
+//! `retryRecovery` skip (B7), and the append-only [`writer`].
 //!
 //! **Deferred** (registered in each module's doc, not silently dropped):
-//! version `< 3` migration, `blob:sha256:…` dereference (refs left verbatim),
-//! the ≥8 MiB streaming loader, transcript mode, provider remote-compaction
-//! replacement history, `retryRecovery` skip, and `branchSummary` message
-//! synthesis. A `compaction` hook exists only as the loader's elision pass;
-//! live compaction generation is a later WP.
+//! transcript mode and provider remote-compaction replacement history. A
+//! `compaction` hook exists only as the loader's elision pass; live compaction
+//! generation is a later WP.
 
 pub mod context;
 pub mod entries;
@@ -33,12 +33,13 @@ pub use context::{
 	build_session_context,
 };
 pub use entries::{
-	CURRENT_SESSION_VERSION, CompactionEntry, KnownEntry, SESSION_TITLE_SLOT_BYTES, SessionEntry,
-	SessionHeader, message_from_json,
+	BranchSummaryEntry, CURRENT_SESSION_VERSION, CompactionEntry, KnownEntry,
+	SESSION_TITLE_SLOT_BYTES, SessionEntry, SessionHeader, message_from_json,
 };
 pub use loader::{
-	LoadedSession, load_entries_from_file, load_session_context, load_session_messages,
-	parse_session_content,
+	LoadedSession, STREAM_LOAD_THRESHOLD_BYTES, default_blobs_dir, load_entries_from_file,
+	load_entries_from_file_with_blobs, load_session_context, load_session_messages,
+	parse_session_content, parse_session_content_with_blobs,
 };
 pub use title_slot::{TitleSlot, parse_title_slot_line, serialize_title_slot};
 pub use writer::SessionWriter;

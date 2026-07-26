@@ -4,8 +4,8 @@
 # with the TS `loadSessionMessagesReadOnly`. No N-API: pure-core crate guarded by
 # `scripts/check-pure-core-no-napi.sh`.
 #
-# Scope (v3 only, per U-omp-29): version<3 migration, blob:sha256 dereference,
-# and the ≥8MiB streaming loader are deferred (registered in the module docs).
+# Scope: reads v1/v2/v3 (WP-1.6 B4 migration in memory), resolves blob:sha256
+# refs (B5), and streams files ≥8MiB (B6). Transcript-mode context stays deferred.
 [package]
 name = "pi-session"
 version.workspace = true
@@ -21,6 +21,7 @@ workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+base64.workspace = true
 pi-ai.workspace = true
 
 [dev-dependencies]

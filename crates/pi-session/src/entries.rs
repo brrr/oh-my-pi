@@ -12,8 +12,8 @@
 //!   `build_session_context` inspects ([`message`](KnownEntry::Message),
 //!   [`compaction`](KnownEntry::Compaction), `model_change`,
 //!   `thinking_level_change`, `service_tier_change`, `mode_change`,
-//!   `custom_message`). Every other type — `custom`, `label`, `title_change`,
-//!   `ttsr_injection`, `session_init`, `branch_summary`, and any future kind —
+//!   `custom_message`, `branch_summary`). Every other type — `custom`, `label`,
+//!   `title_change`, `ttsr_injection`, `session_init`, and any future kind —
 //!   lands in [`SessionEntry::Unknown`] as an opaque [`serde_json::Value`] and
 //!   is never rewritten (the writer is strictly append-only; see `writer.rs`).
 
@@ -173,6 +173,22 @@ pub struct CustomMessageEntry {
 	pub attribution: Option<MessageAttribution>,
 }
 
+/// `BranchSummaryEntry` (session-entries.ts:104) — a fork-point summary that
+/// participates in LLM context (synthesized into a `branchSummary` message).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchSummaryEntry {
+	pub id:             String,
+	pub parent_id:      Option<String>,
+	pub timestamp:      String,
+	pub from_id:        String,
+	pub summary:        String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub details:        Option<Value>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub from_extension: Option<bool>,
+}
+
 /// `CompactionEntry` (session-entries.ts:84). `summary` / `short_summary` /
 /// `preserve_data` are mutated in place by superseded-compaction elision (see
 /// `loader::elide_superseded_compaction_entries`).
@@ -208,6 +224,7 @@ pub enum KnownEntry {
 	ServiceTierChange(ServiceTierChangeEntry),
 	ModeChange(ModeChangeEntry),
 	CustomMessage(CustomMessageEntry),
+	BranchSummary(BranchSummaryEntry),
 	Compaction(CompactionEntry),
 }
 
@@ -267,6 +284,7 @@ impl KnownEntry {
 			Self::ServiceTierChange(e) => EntryBase { id: &e.id, parent_id: &e.parent_id },
 			Self::ModeChange(e) => EntryBase { id: &e.id, parent_id: &e.parent_id },
 			Self::CustomMessage(e) => EntryBase { id: &e.id, parent_id: &e.parent_id },
+			Self::BranchSummary(e) => EntryBase { id: &e.id, parent_id: &e.parent_id },
 			Self::Compaction(e) => EntryBase { id: &e.id, parent_id: &e.parent_id },
 		}
 	}
@@ -279,6 +297,7 @@ impl KnownEntry {
 			Self::ServiceTierChange(_) => "service_tier_change",
 			Self::ModeChange(_) => "mode_change",
 			Self::CustomMessage(_) => "custom_message",
+			Self::BranchSummary(_) => "branch_summary",
 			Self::Compaction(_) => "compaction",
 		}
 	}

@@ -8,12 +8,22 @@
 //! unknown/opaque entry a resumed file already carried is preserved
 //! byte-for-byte simply by never touching it.
 //!
-//! Deferred vs the TS manager: the lazy "no file until first assistant message"
-//! gate, blob externalization, superseded-compaction rewrite, forking, and
-//! title mutation. Entry ids are generated as collision-checked 8-hex strings
-//! (the TS `generateId` shape `crypto.randomUUID().slice(-8)`) from a
-//! per-writer counter rather than random UUID slices — same shape,
-//! deterministic for tests.
+//! Lazy-creation (WP-1.6 B8) — resolved to *immediate* creation. The TS
+//! `SessionManager` carries a lazy gate (`#appendToSessionFile` skips disk
+//! until `#shouldHaveSessionFile()`, i.e. the history holds an assistant
+//! message), but its ACP consumer overrides it: `acp-agent`'s `session/new`
+//! calls `sessionManager.ensureOnDisk()` — commented "ACP session/new must
+//! create a discoverable file immediately" (session-manager.ts:1213-1224) —
+//! precisely so `session/list` can discover the file before the first turn.
+//! omp-headless is an ACP agent, so `create` writes the title slot + header at
+//! `session/new`, matching that forced-materialization path. The lazy gate is a
+//! TUI-only concern and is deliberately not ported.
+//!
+//! Deferred vs the TS manager: blob externalization, superseded-compaction
+//! rewrite, forking, and title mutation. Entry ids are generated as
+//! collision-checked 8-hex strings (the TS `generateId` shape
+//! `crypto.randomUUID().slice(-8)`) from a per-writer counter rather than
+//! random UUID slices — same shape, deterministic for tests.
 
 use std::{
 	collections::BTreeSet,
@@ -38,6 +48,7 @@ use crate::{
 pub struct SessionWriter {
 	file:       File,
 	path:       PathBuf,
+	session_id: String,
 	ids:        BTreeSet<String>,
 	leaf:       Option<String>,
 	id_counter: u64,
@@ -79,7 +90,7 @@ impl SessionWriter {
 		let header = SessionHeader {
 			kind: "session".into(),
 			version: Some(CURRENT_SESSION_VERSION),
-			id: session_id,
+			id: session_id.clone(),
 			title: None,
 			title_source: None,
 			timestamp: timestamp.clone(),
@@ -103,7 +114,7 @@ impl SessionWriter {
 			.write_all(body.as_bytes())
 			.context("writing session header")?;
 
-		Ok(Self { file, path, ids: BTreeSet::new(), leaf: None, id_counter: 0 })
+		Ok(Self { file, path, session_id, ids: BTreeSet::new(), leaf: None, id_counter: 0 })
 	}
 
 	/// Resume appending to an existing session file (leaf continues from the
@@ -124,12 +135,17 @@ impl SessionWriter {
 			.append(true)
 			.open(&path)
 			.with_context(|| format!("opening session file for append {}", path.display()))?;
-		Ok(Self { file, path, ids, leaf, id_counter: 0 })
+		Ok(Self { file, path, session_id: loaded.header.id, ids, leaf, id_counter: 0 })
 	}
 
 	/// The session file path.
 	pub fn path(&self) -> &Path {
 		&self.path
+	}
+
+	/// The session's stable id (the header `id`, also the file-name suffix).
+	pub fn session_id(&self) -> &str {
+		&self.session_id
 	}
 
 	/// The current leaf entry id (`None` before any entry is appended).

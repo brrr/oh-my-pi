@@ -150,6 +150,10 @@ pub struct Usage {
 	pub output:           u64,
 	pub cache_read:       u64,
 	pub cache_write:      u64,
+	// Legacy/aborted sessions persist `usage` without `totalTokens` (the TS type
+	// requires it but the runtime never validates loaded JSONL); default to 0 so
+	// those messages load instead of dropping to an opaque unknown entry.
+	#[serde(default)]
 	pub total_tokens:     u64,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub orchestration:    Option<OrchestrationUsage>,

@@ -3945,6 +3945,7 @@ name = "pi-session"
 version = "17.0.8"
 dependencies = [
  "anyhow",
+ "base64",
  "pi-ai",
  "serde",
  "serde_json",
