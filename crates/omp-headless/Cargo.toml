@@ -32,5 +32,10 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 regex = { workspace = true }
 
+[dev-dependencies]
+# E2 kill 混沌集成测试：读回 journal 验未损坏 + 构造 JSON-RPC 帧
+pi-session = { workspace = true }
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

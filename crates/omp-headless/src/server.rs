@@ -53,7 +53,7 @@ use pi_tools::{BashTool, DynTool, EditTool, GlobTool, GrepTool, ReadTool, WriteT
 
 use crate::{
 	config::LlmConfig,
-	mapping::{map_event, resolve_stop_reason},
+	mapping::{MapProgress, resolve_stop_reason},
 	mcp::{self, McpTool},
 };
 
@@ -578,12 +578,14 @@ async fn run_prompt_turn(
 
 	let mut stream = agent_loop(vec![prompt_message], context, config, cancel_token);
 
+	// per-turn 映射进度态：承接 F8 message_end 文本兜底的 text_emitted 去重位。
+	let mut progress = MapProgress::new();
 	let mut final_messages: Vec<Message> = Vec::new();
 	while let Some(event) = stream.next().await {
 		if let AgentEvent::AgentEnd { messages } = &event {
 			final_messages.clone_from(messages);
 		}
-		for update in map_event(&event) {
+		for update in progress.map(&event) {
 			let _ = cx.send_notification(SessionNotification::new(session_id.clone(), update));
 		}
 	}

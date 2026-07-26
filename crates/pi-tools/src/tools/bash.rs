@@ -6,10 +6,24 @@
 //! `packages/coding-agent/src/session/streaming-output.ts` (`OutputSink`,
 //! `enforceInlineByteCap`).
 //!
-//! Deferred vs. TS: persistent shell sessions (each call is a one-shot
-//! `pi_shell::execute_shell`), the output minimizer, PTY/interactive mode
-//! (`pty` accepted but ignored), async/auto-background jobs, ACP bridge
-//! terminals, artifact capture (`artifact://` footers never appear), shell
+//! ## No persistent shell — each call is a fresh one-shot (F3)
+//!
+//! Every `execute` spawns an independent `pi_shell::execute_shell`; there is
+//! **no** long-lived shell carried between tool calls. State a command mutates
+//! in its own process — `cd`, `export`, shell functions/aliases, `set`
+//! options, `$?` — is therefore **not** visible to the next `bash` call. To
+//! keep a directory or env var, chain it into the *same* command
+//! (`cd sub && cmd`, `FOO=1 cmd`, or `cwd`/`env` args). The leading
+//! `cd <path> && …` case is lifted into the per-call `cwd` (see
+//! `CD_PREFIX_RE`), so the common "cd then run" idiom already works in one
+//! call. The TS persistent-session shell (`bash-executor.ts` session pool) is
+//! deferred; the mitigation lives at the prompt layer (the tool description
+//! tells the model each call is a fresh shell — see `prompts::BASH`).
+//!
+//! Deferred vs. TS: persistent shell sessions (per above), the output
+//! minimizer, PTY/interactive mode (`pty` accepted but ignored, see
+//! `concurrency` note below), async/auto-background jobs, ACP bridge terminals,
+//! artifact capture (`artifact://` footers never appear), shell
 //! snapshots/user-shell wrapping, bash-interceptor rules, internal-URL
 //! expansion in commands, ANSI/control sanitization (plain passthrough), and
 //! github cache invalidation.
@@ -349,8 +363,13 @@ impl Tool for BashTool {
 	// `concurrency` uses the trait default (`Shared`). The TS `bash` tool declares
 	// a dynamic `concurrency = (args) => args.pty ? "exclusive" : "shared"`
 	// (`packages/coding-agent/src/tools/bash.ts:422`); the non-pty default is
-	// `shared`, which the trait default matches. The args-driven pty→exclusive
-	// upgrade is deferred to WP-1.4b (`Concurrency` doc registers the deferral).
+	// `shared`, which the trait default matches. Since this port **accepts but
+	// ignores** the `pty` arg (no PTY execution path — see `input_schema` and the
+	// module deferral list), every call is effectively non-pty, so the static
+	// `Shared` class holds for all inputs — there is no arg under which bash would
+	// need `Exclusive`. Keeping `Tool::concurrency` arg-less is therefore correct
+	// here; the args-driven pty→exclusive upgrade is deferred to WP-1.4b together
+	// with PTY support (`Concurrency` doc registers the deferral).
 
 	fn description(&self) -> &str {
 		crate::prompts::BASH

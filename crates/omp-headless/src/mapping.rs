@@ -11,18 +11,32 @@
 //! | `message_update` + `text_delta` | `agent_message_chunk`(text=delta) | mapAssistantMessageUpdate |
 //! | `message_update` + `thinking_delta` | `agent_thought_chunk`(text=delta) | 同上 |
 //! | `tool_execution_start` | `tool_call`(id/title/kind/rawInput) | buildToolCallStartUpdate |
+//! | `tool_execution_update` | `tool_call_update`(status=`in_progress` + `rawOutput`) | `tool_execution_update` 分支 |
 //! | `tool_execution_end` | `tool_call_update`(status completed/failed + content) | `tool_execution_end` 分支 |
+//! | `message_end`（无 delta 时） | `agent_message_chunk`（终值文本兜底） | mapAssistantMessageEnd |
 //! | 其余（turn/message start·end、agent start·end 等） | —（不映射） | mapper default `[]` |
 //!
-//! ## 与 TS 的差异（WP-1.5 最小面，doc 登记）
-//! - 不映射 `done`/`message_end` 文本兜底（TS 有 `progress.textEmitted`
-//!   去重态）： 本 WP 只吐 `text_delta`，`DeepSeek` 流式必有渐进 delta（pi-ai
-//!   `stream` 例已证）， 文本完整性不依赖 done 兜底。
+//! ## `message_end` 文本兜底（WP-1.6e，F8）
+//! [`MapProgress`] 在 [`map_event`] 之上叠一层 per-message 的
+//! `text_emitted` 去重态，照抄 TS `acp-event-mapper.ts` 的
+//! `progress.textEmitted`（:283-352）：一条 assistant message 期间**发过**任何
+//! `text_delta` → `message_end` 不再补发；**没发过** delta（非流式 provider 一
+//! 次性返终值消息的情形）→ 从终值 message 抽文本补一发
+//! `agent_message_chunk`，保证宿主拿得到完整文本。`DeepSeek` 流式恒有渐进
+//! delta，故此兜底在现网 golden 里**不触发**（golden 事件形状不变）；它只为非流
+//! 式 provider 兜底。宿主（[`crate::server`]）持一个 `MapProgress` 跨整个
+//! prompt turn 复用，`message_start` 处自动重置去重态。
 //! - `plan`/`todo` update **不产**（无来源，defer；见 [`crate`] 顶注）。
 //! - `buildToolTitle` 只取 intent / path·command·pattern·query 主语，未移植
 //!   command-tool（bash）整行文本与 eval 特判——最小可读标题，golden 自洽即可。
 //! - tool 内容抽取（diff / 多模态）未移植，`tool_call_update` 只带 rawOutput +
 //!   单条文本内容块（driver 只读 status，内容仅装饰）。
+//! - **F6 tool_execution_update（WP-1.6e）**：映射面（`AgentEvent` →
+//!   `tool_call_update` 的 `in_progress` 态）已打通并单测，但 pi-agent
+//!   **尚不发射** 该事件——发射需 `Tool::execute` 加 `on_update` 流式回调（Tool
+//!   trait 接口变更），属 WP-1.4b defer（`pi_tools::Tool` doc +
+//!   `pi_agent::execute` 顶注均登记）。本 WP 只补映射侧零接口改动的事件面，产出
+//!   侧留 defer。
 
 use agent_client_protocol::schema::v1::{
 	ContentBlock, ContentChunk, SessionUpdate, StopReason as AcpStopReason, ToolCall,
@@ -103,6 +117,19 @@ pub fn map_event(event: &AgentEvent) -> Vec<SessionUpdate> {
 					.raw_input(args.clone()),
 			)]
 		},
+		AgentEvent::ToolExecutionUpdate { tool_call_id, partial_result, .. } => {
+			// F6：in-flight 工具的流式部分结果 → tool_call_update(in_progress)。
+			// TS `tool_execution_update` 分支（acp-event-mapper.ts:198-216）：
+			// status=in_progress，rawOutput=partialResult，有文本则附内容块。
+			// pi-agent 尚不发射此事件（Tool on_update 回调 defer），映射面先备好。
+			let mut fields = ToolCallUpdateFields::new()
+				.status(ToolCallStatus::InProgress)
+				.raw_output(partial_result.clone());
+			if let Some(text) = result_text(partial_result) {
+				fields = fields.content(vec![ToolCallContent::from(text)]);
+			}
+			vec![SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(tool_call_id.clone(), fields))]
+		},
 		AgentEvent::ToolExecutionEnd { tool_call_id, result, is_error, .. } => {
 			let status = if is_error.unwrap_or(false) {
 				ToolCallStatus::Failed
@@ -117,9 +144,91 @@ pub fn map_event(event: &AgentEvent) -> Vec<SessionUpdate> {
 			}
 			vec![SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(tool_call_id.clone(), fields))]
 		},
-		// turn/message start·end、agent start·end、tool_execution_update：不映射。
+		// turn/message start·end、agent start·end：不映射（`message_end` 文本兜底
+		// 由 [`MapProgress`] 承接，见下）。
 		_ => vec![],
 	}
+}
+
+/// 跨事件的映射进度态（TS `MessageProgress`：只跟踪 `text_emitted` 去重位）。
+///
+/// [`map_event`] 是纯 per-event 函数，无法自己判断 `message_end` 该不该补发。
+/// 宿主持一个 `MapProgress` 跨整个 prompt turn 复用，把每个 [`AgentEvent`] 交给
+/// [`MapProgress::map`]：常规事件透传给 [`map_event`]，另加两处 F8 逻辑——
+/// `text_delta`（非空）置位 `text_emitted`，`message_start` 重置去重位，
+/// `message_end` 在**未发过** delta 时从终值消息抽文本补一发。
+#[derive(Debug, Default)]
+pub struct MapProgress {
+	/// 当前 assistant message 期间是否已发过 `agent_message_chunk`（text）。
+	text_emitted: bool,
+}
+
+impl MapProgress {
+	/// 新建一个初始（未发文本）的进度态。
+	#[must_use]
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	/// 映射一个 [`AgentEvent`]，维护 `text_emitted` 去重位（F8）。
+	#[must_use]
+	pub fn map(&mut self, event: &AgentEvent) -> Vec<SessionUpdate> {
+		match event {
+			// message 边界：重置去重位，让下一条 message 独立判定兜底。
+			AgentEvent::MessageStart { .. } => {
+				self.text_emitted = false;
+				Vec::new()
+			},
+			AgentEvent::MessageUpdate { assistant_message_event, .. } => {
+				let updates = map_message_update(assistant_message_event);
+				// 发过任何 agent_message_chunk（text）即置位，抑制 message_end 兜底。
+				if updates
+					.iter()
+					.any(|u| matches!(u, SessionUpdate::AgentMessageChunk(_)))
+				{
+					self.text_emitted = true;
+				}
+				updates
+			},
+			AgentEvent::MessageEnd { message } => self.message_end_fallback(message),
+			other => map_event(other),
+		}
+	}
+
+	/// `message_end` 文本兜底（TS `mapAssistantMessageEnd`,
+	/// acp-event-mapper.ts:336-359）：本条消息发过 delta（`text_emitted`）→
+	/// 不补； 否则从终值 assistant 消息抽文本，非空则补发一条
+	/// `agent_message_chunk` 并置 位。非 assistant / 无文本 →
+	/// 空。收尾重置去重位（下条 message 重新判定）。
+	fn message_end_fallback(&mut self, message: &Message) -> Vec<SessionUpdate> {
+		if self.text_emitted {
+			self.text_emitted = false;
+			return Vec::new();
+		}
+		let text = assistant_message_text(message);
+		self.text_emitted = false;
+		if text.is_empty() {
+			return Vec::new();
+		}
+		self.text_emitted = true;
+		vec![SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(text)))]
+	}
+}
+
+/// 抽 assistant 消息里所有 text block 拼成一段（TS
+/// `extractAssistantMessageText`；非 assistant 返空串）。thinking / toolCall /
+/// image 块不计入——兜底只补可见正文。
+fn assistant_message_text(message: &Message) -> String {
+	let Message::Assistant(assistant) = message else {
+		return String::new();
+	};
+	let mut text = String::new();
+	for block in &assistant.content {
+		if let pi_ai::message::AssistantContent::Text(content) = block {
+			text.push_str(&content.text);
+		}
+	}
+	text
 }
 
 /// `message_update` 内嵌 provider 事件 → text/thought chunk（其余变体不产）。
@@ -190,7 +299,7 @@ fn is_refusal(text: &str) -> bool {
 mod tests {
 	use std::sync::Arc;
 
-	use pi_ai::message::{AssistantMessage, Usage};
+	use pi_ai::message::{AssistantContent, AssistantMessage, Usage};
 
 	use super::*;
 
@@ -343,6 +452,25 @@ mod tests {
 	}
 
 	#[test]
+	fn tool_execution_update_maps_to_in_progress_update() {
+		// F6：tool_execution_update → tool_call_update(in_progress) + rawOutput。
+		let event = AgentEvent::ToolExecutionUpdate {
+			tool_call_id:   "call-9".to_owned(),
+			tool_name:      "bash".to_owned(),
+			args:           serde_json::json!({ "command": "sleep 1" }),
+			partial_result: serde_json::json!({ "output": "partial line\n" }),
+		};
+		match &map_event(&event)[0] {
+			SessionUpdate::ToolCallUpdate(update) => {
+				assert_eq!(update.tool_call_id.0.as_ref(), "call-9");
+				assert_eq!(update.fields.status, Some(ToolCallStatus::InProgress));
+				assert!(update.fields.content.as_ref().is_some_and(|c| c.len() == 1));
+			},
+			other => panic!("期望 tool_call_update(in_progress), 实得 {other:?}"),
+		}
+	}
+
+	#[test]
 	fn tool_execution_end_error_maps_to_failed_update() {
 		let event = AgentEvent::ToolExecutionEnd {
 			tool_call_id: "call-2".to_owned(),
@@ -460,5 +588,77 @@ mod tests {
 			"tool_call_update",
 			"agent_message_chunk",
 		]);
+	}
+
+	// ── F8: message_end 文本兜底（MapProgress）────────────────────────────
+
+	/// 带文本内容块的 assistant message（终值消息，兜底抽文本用）。
+	fn assistant_with_text(text: &str) -> Message {
+		let mut msg = assistant(StopReason::Stop, None);
+		msg.content = vec![AssistantContent::Text(pi_ai::message::TextContent {
+			text:           text.to_owned(),
+			text_signature: None,
+		})];
+		Message::Assistant(Box::new(msg))
+	}
+
+	fn message_end(text: &str) -> AgentEvent {
+		AgentEvent::MessageEnd { message: assistant_with_text(text) }
+	}
+
+	fn chunk_text(update: &SessionUpdate) -> &str {
+		match update {
+			SessionUpdate::AgentMessageChunk(chunk) => match &chunk.content {
+				ContentBlock::Text(text) => &text.text,
+				other => panic!("期望 text content, 实得 {other:?}"),
+			},
+			other => panic!("期望 agent_message_chunk, 实得 {other:?}"),
+		}
+	}
+
+	#[test]
+	fn message_end_fallback_emits_when_no_delta() {
+		// 非流式 provider：一路无 text_delta → message_end 从终值补发全文。
+		let mut p = MapProgress::new();
+		assert!(
+			p.map(&AgentEvent::MessageStart { message: assistant_with_text("") })
+				.is_empty()
+		);
+		let updates = p.map(&message_end("full answer body"));
+		assert_eq!(updates.len(), 1, "无 delta 时 message_end 补发一条 chunk");
+		assert_eq!(chunk_text(&updates[0]), "full answer body");
+	}
+
+	#[test]
+	fn message_end_fallback_suppressed_after_delta() {
+		// 流式 provider（DeepSeek）：发过 delta → message_end 不再补（去重）。
+		let mut p = MapProgress::new();
+		let _ = p.map(&AgentEvent::MessageStart { message: assistant_with_text("hello") });
+		let d = p.map(&text_delta("hello"));
+		assert_eq!(d.len(), 1, "delta 正常透传");
+		let updates = p.map(&message_end("hello"));
+		assert!(updates.is_empty(), "已发过 delta，message_end 兜底被抑制");
+	}
+
+	#[test]
+	fn message_end_fallback_empty_text_no_emit() {
+		// 终值消息无可见正文（如纯 tool_use 轮）→ 不补发空 chunk。
+		let mut p = MapProgress::new();
+		let updates = p.map(&message_end(""));
+		assert!(updates.is_empty(), "空文本不补发");
+	}
+
+	#[test]
+	fn message_start_resets_dedup_across_messages() {
+		// 多条 assistant message：第一条发过 delta，第二条非流式 → 各自独立判定。
+		let mut p = MapProgress::new();
+		let _ = p.map(&AgentEvent::MessageStart { message: assistant_with_text("a") });
+		let _ = p.map(&text_delta("a"));
+		assert!(p.map(&message_end("a")).is_empty(), "msg1 发过 delta 不补");
+		// msg2：无 delta，message_start 已重置去重位 → 兜底应触发。
+		let _ = p.map(&AgentEvent::MessageStart { message: assistant_with_text("b") });
+		let updates = p.map(&message_end("second body"));
+		assert_eq!(updates.len(), 1, "msg2 无 delta，重置后兜底触发");
+		assert_eq!(chunk_text(&updates[0]), "second body");
 	}
 }

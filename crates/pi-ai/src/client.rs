@@ -4,8 +4,10 @@
 //! `AnthropicMessagesClient` (anthropic-client.ts:88-121 / :223-294):
 //! maxRetries=2, retry on connection errors / timeout / 408 / 409 / 429 / 5xx,
 //! `x-should-retry` overrides both ways, `retry-after-ms` then `retry-after`
-//! (seconds form; HTTP-date form is ignored) then exponential backoff
-//! `min(0.5·2^n, 8s)` with 25% jitter. The 600s deadline guards **until the
+//! (integer-seconds form first, then RFC 7231 §7.1.1.1 IMF-fixdate HTTP-date
+//! form resolved against the local clock — TS `Date.parse(retryAfter) -
+//! Date.now()` parity) then exponential backoff `min(0.5·2^n, 8s)` with 25%
+//! jitter. The 600s deadline guards **until the
 //! response head arrives** (TS parity) — established SSE streams are not
 //! killed by it.
 //!
@@ -249,8 +251,7 @@ impl Client {
 				headers
 					.get("retry-after")
 					.and_then(|value| value.to_str().ok())
-					.and_then(|value| value.parse::<u64>().ok())
-					.map(Duration::from_secs)
+					.and_then(parse_retry_after)
 			});
 		let request_id = headers
 			.get("request-id")
@@ -342,4 +343,123 @@ fn unix_millis() -> i64 {
 	SystemTime::now()
 		.duration_since(UNIX_EPOCH)
 		.map_or(0, |elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Parse a `retry-after` header value into a delay. Integer seconds first
+/// (`"120"`), then RFC 7231 §7.1.1.1 IMF-fixdate HTTP-date form
+/// (`"Wed, 21 Oct 2015 07:28:00 GMT"`) resolved against the local clock. A date
+/// already in the past yields `Duration::ZERO`; an unparseable value yields
+/// `None`, letting the backoff fall through to exponential jitter. Mirrors the
+/// TS SDK's `parseInt(v) || (Date.parse(v) - Date.now())` two-step.
+fn parse_retry_after(value: &str) -> Option<Duration> {
+	let trimmed = value.trim();
+	if let Ok(secs) = trimmed.parse::<u64>() {
+		return Some(Duration::from_secs(secs));
+	}
+	let target = parse_imf_fixdate(trimmed)?;
+	let now = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.ok()?
+		.as_secs()
+		.try_into()
+		.unwrap_or(i64::MAX);
+	Some(Duration::from_secs(u64::try_from(target - now).unwrap_or(0)))
+}
+
+/// RFC 7231 §7.1.1.1 IMF-fixdate → Unix seconds (GMT only, the sole form a
+/// conformant server sends). Example: `Sun, 06 Nov 1994 08:49:37 GMT`. Returns
+/// `None` on any structural mismatch (obsolete RFC 850 / asctime forms are not
+/// accepted — same as the strict path servers are required to emit).
+fn parse_imf_fixdate(value: &str) -> Option<i64> {
+	// `Sun, 06 Nov 1994 08:49:37 GMT` → ["Sun,", "06", "Nov", "1994",
+	// "08:49:37", "GMT"].
+	let parts: Vec<&str> = value.split_whitespace().collect();
+	if parts.len() != 6 || parts[5] != "GMT" {
+		return None;
+	}
+	let day: i64 = parts[1].parse().ok()?;
+	let month = match parts[2] {
+		"Jan" => 1,
+		"Feb" => 2,
+		"Mar" => 3,
+		"Apr" => 4,
+		"May" => 5,
+		"Jun" => 6,
+		"Jul" => 7,
+		"Aug" => 8,
+		"Sep" => 9,
+		"Oct" => 10,
+		"Nov" => 11,
+		"Dec" => 12,
+		_ => return None,
+	};
+	let year: i64 = parts[3].parse().ok()?;
+	let mut hms = parts[4].split(':');
+	let hour: i64 = hms.next()?.parse().ok()?;
+	let minute: i64 = hms.next()?.parse().ok()?;
+	let second: i64 = hms.next()?.parse().ok()?;
+	if hms.next().is_some() || !(0..=23).contains(&hour) || minute > 59 || second > 60 {
+		return None;
+	}
+	Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second)
+}
+
+/// Days since the Unix epoch (1970-01-01) for a proleptic-Gregorian date.
+/// Howard Hinnant's `days_from_civil` (public-domain chrono algorithm).
+const fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+	let y = if month <= 2 { year - 1 } else { year };
+	let era = if y >= 0 { y } else { y - 399 } / 400;
+	let yoe = y - era * 400;
+	let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+	let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	era * 146_097 + doe - 719_468
+}
+
+#[cfg(test)]
+mod tests {
+	use std::time::Duration;
+
+	use super::{days_from_civil, parse_imf_fixdate, parse_retry_after};
+
+	#[test]
+	fn imf_fixdate_known_epochs() {
+		// Unix epoch and a few reference points (verified against `date -u`).
+		assert_eq!(days_from_civil(1970, 1, 1), 0);
+		assert_eq!(parse_imf_fixdate("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
+		// 2015-10-21 07:28:00 UTC = 1_445_412_480 (RFC 7231 canonical example).
+		assert_eq!(parse_imf_fixdate("Wed, 21 Oct 2015 07:28:00 GMT"), Some(1_445_412_480));
+		// Leap day.
+		assert_eq!(parse_imf_fixdate("Mon, 29 Feb 2016 00:00:00 GMT"), Some(1_456_704_000));
+	}
+
+	#[test]
+	fn imf_fixdate_rejects_malformed() {
+		assert_eq!(parse_imf_fixdate("Wed, 21 Oct 2015 07:28:00 PST"), None); // non-GMT zone
+		assert_eq!(parse_imf_fixdate("21 Oct 2015 07:28:00 GMT"), None); // missing weekday
+		assert_eq!(parse_imf_fixdate("Wed, 21 Foo 2015 07:28:00 GMT"), None); // bad month
+		assert_eq!(parse_imf_fixdate("Wed, 21 Oct 2015 07:28 GMT"), None); // truncated time
+		assert_eq!(parse_imf_fixdate("Sunday, 06-Nov-94 08:49:37 GMT"), None); // RFC 850 form
+	}
+
+	#[test]
+	fn retry_after_prefers_integer_seconds() {
+		assert_eq!(parse_retry_after("45"), Some(Duration::from_secs(45)));
+		assert_eq!(parse_retry_after("  7  "), Some(Duration::from_secs(7)));
+	}
+
+	#[test]
+	fn retry_after_http_date_relative_to_now() {
+		// A far-past date clamps to zero rather than going negative.
+		let past = parse_retry_after("Thu, 01 Jan 1970 00:00:00 GMT").expect("parses");
+		assert_eq!(past, Duration::ZERO);
+		// A future date yields a positive, sane delay (well under a year).
+		let year_3000 = parse_retry_after("Sat, 01 Jan 3000 00:00:00 GMT").expect("parses");
+		assert!(year_3000 > Duration::ZERO);
+	}
+
+	#[test]
+	fn retry_after_garbage_is_none() {
+		assert_eq!(parse_retry_after("soon"), None);
+		assert_eq!(parse_retry_after(""), None);
+	}
 }
