@@ -1,0 +1,16 @@
+{
+	"tool": "read",
+	"case": "empty",
+	"params": {
+		"path": "empty.txt"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "[empty.txt#5D05]\n1:"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

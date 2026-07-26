@@ -1,0 +1,6 @@
+alpha line
+target line to replace
+gamma line
+dup line
+dup line
+omega line

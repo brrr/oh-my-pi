@@ -1,0 +1,11 @@
+{
+	"tool": "read",
+	"case": "not-found",
+	"params": {
+		"path": "nope/missing.txt"
+	},
+	"content": null,
+	"isError": false,
+	"useless": false,
+	"threw": "Path 'nope/missing.txt' not found"
+}

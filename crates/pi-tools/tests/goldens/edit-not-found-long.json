@@ -1,0 +1,17 @@
+{
+	"tool": "edit",
+	"case": "not-found-long",
+	"params": {
+		"path": "edit-target.txt",
+		"edits": [
+			{
+				"old_text": "phantom line 1\nphantom line 2\nphantom line 3\nphantom line 4\nphantom line 5\nphantom line 6\nphantom line 7\nphantom line 8\nphantom line 9\nphantom line 10\nphantom line 11\nphantom line 12",
+				"new_text": "x"
+			}
+		]
+	},
+	"content": null,
+	"isError": false,
+	"useless": false,
+	"threw": "Could not find the exact text in edit-target.txt. The old text must match exactly including all whitespace and newlines."
+}

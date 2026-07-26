@@ -1,0 +1,17 @@
+{
+	"tool": "edit",
+	"case": "missing-file",
+	"params": {
+		"path": "missing.txt",
+		"edits": [
+			{
+				"old_text": "a",
+				"new_text": "b"
+			}
+		]
+	},
+	"content": null,
+	"isError": false,
+	"useless": false,
+	"threw": "File not found: missing.txt"
+}

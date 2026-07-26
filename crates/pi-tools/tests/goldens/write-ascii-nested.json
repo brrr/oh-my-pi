@@ -1,0 +1,20 @@
+{
+	"tool": "write",
+	"case": "ascii-nested",
+	"params": {
+		"path": "out/plain.txt",
+		"content": "hello fixture\n"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "Successfully wrote 14 bytes to out/plain.txt"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null,
+	"postFiles": {
+		"out/plain.txt": "hello fixture\n"
+	}
+}

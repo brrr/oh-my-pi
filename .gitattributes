@@ -55,3 +55,6 @@ poetry.lock -text
 # Changelogs are append-mostly; auto-merge by unioning both sides.
 packages/*/CHANGELOG.md merge=union
 
+
+# WP-1.2 C2 golden fixture: CRLF line endings are the fixture payload — never normalize.
+crates/pi-tools/tests/fixture-ws/crlf.txt -text

@@ -1,0 +1,16 @@
+{
+	"tool": "read",
+	"case": "whole-small",
+	"params": {
+		"path": "README.txt"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "[README.txt#49C3]\n1:project fixture readme\n2:line two with alpha token\n3:line three\n4:第四行是中文内容\n5:line five with beta token\n6:line six\n7:line seven\n8:line eight\n9:line nine\n10:line ten\n11:line eleven\n12:final line twelve\n13:"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

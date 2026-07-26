@@ -1,0 +1,25 @@
+{
+	"tool": "edit",
+	"case": "single",
+	"params": {
+		"path": "edit-target.txt",
+		"edits": [
+			{
+				"old_text": "target line to replace",
+				"new_text": "replaced line"
+			}
+		]
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "Successfully replaced text in edit-target.txt."
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null,
+	"postFiles": {
+		"edit-target.txt": "alpha line\nreplaced line\ngamma line\ndup line\ndup line\nomega line\n"
+	}
+}

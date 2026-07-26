@@ -1,0 +1,26 @@
+{
+	"tool": "edit",
+	"case": "all",
+	"params": {
+		"path": "edit-target.txt",
+		"edits": [
+			{
+				"old_text": "dup line",
+				"new_text": "dupe line",
+				"all": true
+			}
+		]
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "Successfully replaced 2 occurrences in edit-target.txt."
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null,
+	"postFiles": {
+		"edit-target.txt": "alpha line\ntarget line to replace\ngamma line\ndupe line\ndupe line\nomega line\n"
+	}
+}

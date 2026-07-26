@@ -1,0 +1,17 @@
+{
+	"tool": "edit",
+	"case": "no-change",
+	"params": {
+		"path": "edit-target.txt",
+		"edits": [
+			{
+				"old_text": "alpha line",
+				"new_text": "alpha line"
+			}
+		]
+	},
+	"content": null,
+	"isError": false,
+	"useless": false,
+	"threw": "Edits to edit-target.txt resulted in no changes being made."
+}

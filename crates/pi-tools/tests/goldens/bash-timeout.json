@@ -1,0 +1,17 @@
+{
+	"tool": "bash",
+	"case": "timeout",
+	"params": {
+		"command": "printf start; sleep 2",
+		"timeout": 1
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "[Command timed out after 1 seconds]\nstarterror: interrupted\n\n\nWall time: «WT» seconds"
+		}
+	],
+	"isError": true,
+	"useless": false,
+	"threw": null
+}

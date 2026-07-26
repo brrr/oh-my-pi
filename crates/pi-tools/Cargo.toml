@@ -14,12 +14,16 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+flume.workspace = true
 regex.workspace = true
+tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 twox-hash.workspace = true
 pi-ai.workspace = true
+pi-grep.workspace = true
 pi-shell.workspace = true
+pi-walker.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -1,0 +1,16 @@
+{
+	"tool": "read",
+	"case": "selector-range-brackets",
+	"params": {
+		"path": "src/app.txt:4-5"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "[app.txt#3809]\n3:  block one {\n4:    alpha = 1\n5:    beta = 2\n6:    gamma = 3\n7:    delta = 4\n8:  }"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

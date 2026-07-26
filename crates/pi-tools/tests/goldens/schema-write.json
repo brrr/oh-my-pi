@@ -1,0 +1,39 @@
+{
+	"tool": "write",
+	"wireSchema": {
+		"type": "object",
+		"properties": {
+			"path": {
+				"type": "string",
+				"description": "file path"
+			},
+			"content": {
+				"type": "string",
+				"description": "file content"
+			}
+		},
+		"required": [
+			"path",
+			"content"
+		],
+		"additionalProperties": false
+	},
+	"normalized": {
+		"type": "object",
+		"properties": {
+			"path": {
+				"type": "string",
+				"description": "file path"
+			},
+			"content": {
+				"type": "string",
+				"description": "file content"
+			}
+		},
+		"required": [
+			"path",
+			"content"
+		],
+		"additionalProperties": false
+	}
+}

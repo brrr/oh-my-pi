@@ -1,0 +1,16 @@
+{
+	"tool": "bash",
+	"case": "exit-code",
+	"params": {
+		"command": "printf 'partial output\\n'; exit 3"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "partial output\n\n\nWall time: «WT» seconds\n\nCommand exited with code 3"
+		}
+	],
+	"isError": true,
+	"useless": false,
+	"threw": null
+}

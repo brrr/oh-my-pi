@@ -1,0 +1,16 @@
+{
+	"tool": "bash",
+	"case": "echo",
+	"params": {
+		"command": "echo hello from fixture"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "hello from fixture\n\n\nWall time: «WT» seconds"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

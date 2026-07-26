@@ -1,0 +1,16 @@
+{
+	"tool": "grep",
+	"case": "dir-default",
+	"params": {
+		"pattern": "needle"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "# data.log#6547\n 1:2020-01-01 boot ok\n*2:2020-01-02 needle event\n 3:2020-01-03 shutdown\n\n# notes/\n## 中文.txt#1ECA\n 1:中文文件第一行\n*2:这里有一个 needle 标记\n 3:结束行\n\n# src/\n## lib.txt#CE51\n 1:lib header\n*2:needle alpha here\n 3:plain line\n*4:needle beta here\n 5:tail line\n\n## util/\n### helper.txt#53A7\n 1:helper start\n*2:one needle in helper\n 3:middle\n*4:another needle in helper\n 5:helper end"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

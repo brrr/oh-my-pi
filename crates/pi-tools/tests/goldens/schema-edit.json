@@ -1,0 +1,73 @@
+{
+	"tool": "edit",
+	"wireSchema": {
+		"type": "object",
+		"properties": {
+			"path": {
+				"type": "string"
+			},
+			"edits": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"old_text": {
+							"type": "string"
+						},
+						"new_text": {
+							"type": "string"
+						},
+						"all": {
+							"type": "boolean"
+						}
+					},
+					"required": [
+						"old_text",
+						"new_text"
+					],
+					"additionalProperties": false
+				}
+			}
+		},
+		"required": [
+			"path",
+			"edits"
+		],
+		"additionalProperties": false
+	},
+	"normalized": {
+		"type": "object",
+		"properties": {
+			"path": {
+				"type": "string"
+			},
+			"edits": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"old_text": {
+							"type": "string"
+						},
+						"new_text": {
+							"type": "string"
+						},
+						"all": {
+							"type": "boolean"
+						}
+					},
+					"required": [
+						"old_text",
+						"new_text"
+					],
+					"additionalProperties": false
+				}
+			}
+		},
+		"required": [
+			"path",
+			"edits"
+		],
+		"additionalProperties": false
+	}
+}

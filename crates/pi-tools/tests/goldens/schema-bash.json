@@ -1,0 +1,67 @@
+{
+	"tool": "bash",
+	"wireSchema": {
+		"type": "object",
+		"properties": {
+			"command": {
+				"type": "string",
+				"description": "command to execute"
+			},
+			"env": {
+				"type": "object",
+				"description": "extra env vars",
+				"additionalProperties": {
+					"type": "string"
+				}
+			},
+			"timeout": {
+				"type": "number",
+				"description": "timeout in seconds; 0 disables the command deadline; nonzero values are clamped to 1-3600"
+			},
+			"cwd": {
+				"type": "string",
+				"description": "working directory"
+			},
+			"pty": {
+				"type": "boolean",
+				"description": "run in pty mode"
+			}
+		},
+		"required": [
+			"command"
+		],
+		"additionalProperties": false
+	},
+	"normalized": {
+		"type": "object",
+		"properties": {
+			"command": {
+				"type": "string",
+				"description": "command to execute"
+			},
+			"env": {
+				"type": "object",
+				"description": "extra env vars",
+				"additionalProperties": {
+					"type": "string"
+				}
+			},
+			"timeout": {
+				"type": "number",
+				"description": "timeout in seconds; 0 disables the command deadline; nonzero values are clamped to 1-3600"
+			},
+			"cwd": {
+				"type": "string",
+				"description": "working directory"
+			},
+			"pty": {
+				"type": "boolean",
+				"description": "run in pty mode"
+			}
+		},
+		"required": [
+			"command"
+		],
+		"additionalProperties": false
+	}
+}

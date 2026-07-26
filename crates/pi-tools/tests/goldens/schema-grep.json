@@ -1,0 +1,79 @@
+{
+	"tool": "grep",
+	"wireSchema": {
+		"type": "object",
+		"properties": {
+			"pattern": {
+				"type": "string",
+				"description": "regex pattern"
+			},
+			"path": {
+				"type": "string",
+				"description": "file, directory, glob, internal URL, or \"<file>:<lines>\" selector to search; pass several as a semicolon-delimited list (\"src; tests\"). Omitted -> searches the workspace root (\".\")"
+			},
+			"case": {
+				"type": "boolean",
+				"description": "case-sensitive search"
+			},
+			"gitignore": {
+				"type": "boolean",
+				"description": "respect gitignore"
+			},
+			"skip": {
+				"anyOf": [
+					{
+						"type": "number",
+						"description": "files to skip before collecting results — use to paginate when the prior call hit the file limit"
+					},
+					{
+						"type": "null",
+						"description": "files to skip before collecting results — use to paginate when the prior call hit the file limit"
+					}
+				],
+				"description": "files to skip before collecting results — use to paginate when the prior call hit the file limit"
+			}
+		},
+		"required": [
+			"pattern"
+		],
+		"additionalProperties": false
+	},
+	"normalized": {
+		"type": "object",
+		"properties": {
+			"pattern": {
+				"type": "string",
+				"description": "regex pattern"
+			},
+			"path": {
+				"type": "string",
+				"description": "file, directory, glob, internal URL, or \"<file>:<lines>\" selector to search; pass several as a semicolon-delimited list (\"src; tests\"). Omitted -> searches the workspace root (\".\")"
+			},
+			"case": {
+				"type": "boolean",
+				"description": "case-sensitive search"
+			},
+			"gitignore": {
+				"type": "boolean",
+				"description": "respect gitignore"
+			},
+			"skip": {
+				"anyOf": [
+					{
+						"type": "number",
+						"description": "files to skip before collecting results — use to paginate when the prior call hit the file limit"
+					},
+					{
+						"type": "null",
+						"description": "files to skip before collecting results — use to paginate when the prior call hit the file limit"
+					}
+				],
+				"description": "files to skip before collecting results — use to paginate when the prior call hit the file limit"
+			}
+		},
+		"required": [
+			"pattern"
+		],
+		"additionalProperties": false
+	}
+}

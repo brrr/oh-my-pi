@@ -1,0 +1,16 @@
+{
+	"tool": "glob",
+	"case": "all-txt",
+	"params": {
+		"path": "**/*.txt"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "empty.txt\nedit-target.txt\ncrlf.txt\nbig.txt\nREADME.txt\n.hidden.txt\n# src/\nlib.txt\napp.txt\n## util/\nhelper.txt\n# notes/\n中文.txt"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

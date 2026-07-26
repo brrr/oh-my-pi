@@ -1,0 +1,14 @@
+begin config {
+  name = "fixture"
+  block one {
+    alpha = 1
+    beta = 2
+    gamma = 3
+    delta = 4
+  }
+  block two {
+    epsilon = 5
+    zeta = 6
+  }
+}
+trailing note line

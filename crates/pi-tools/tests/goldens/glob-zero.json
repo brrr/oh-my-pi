@@ -1,0 +1,16 @@
+{
+	"tool": "glob",
+	"case": "zero",
+	"params": {
+		"path": "*.nomatch"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "No files found matching pattern"
+		}
+	],
+	"isError": false,
+	"useless": true,
+	"threw": null
+}

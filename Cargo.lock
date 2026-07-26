@@ -3712,8 +3712,11 @@ dependencies = [
 name = "pi-tools"
 version = "17.0.8"
 dependencies = [
+ "flume",
  "pi-ai",
+ "pi-grep",
  "pi-shell",
+ "pi-walker",
  "regex",
  "serde",
  "serde_json",

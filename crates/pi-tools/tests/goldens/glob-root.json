@@ -1,0 +1,11 @@
+{
+	"tool": "glob",
+	"case": "root",
+	"params": {
+		"path": "/"
+	},
+	"content": null,
+	"isError": false,
+	"useless": false,
+	"threw": "Searching from root directory '/' is not allowed"
+}

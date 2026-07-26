@@ -1,0 +1,17 @@
+{
+	"tool": "edit",
+	"case": "empty-old",
+	"params": {
+		"path": "edit-target.txt",
+		"edits": [
+			{
+				"old_text": "",
+				"new_text": "x"
+			}
+		]
+	},
+	"content": null,
+	"isError": false,
+	"useless": false,
+	"threw": "old_text must not be empty."
+}

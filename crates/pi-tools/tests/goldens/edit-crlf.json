@@ -1,0 +1,25 @@
+{
+	"tool": "edit",
+	"case": "crlf",
+	"params": {
+		"path": "crlf.txt",
+		"edits": [
+			{
+				"old_text": "crlf two",
+				"new_text": "crlf TWO"
+			}
+		]
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "Successfully replaced text in crlf.txt."
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null,
+	"postFiles": {
+		"crlf.txt": "crlf one\r\ncrlf TWO\r\ncrlf three\r\n"
+	}
+}

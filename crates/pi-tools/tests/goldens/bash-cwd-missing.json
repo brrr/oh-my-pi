@@ -1,0 +1,12 @@
+{
+	"tool": "bash",
+	"case": "cwd-missing",
+	"params": {
+		"command": "echo hi",
+		"cwd": "does-not-exist"
+	},
+	"content": null,
+	"isError": false,
+	"useless": false,
+	"threw": "Working directory does not exist: «WS»/does-not-exist"
+}

@@ -1,0 +1,19 @@
+{
+	"tool": "bash",
+	"case": "env",
+	"params": {
+		"command": "printf '%s\\n' \"$GREETING\"",
+		"env": {
+			"GREETING": "你好 fixture"
+		}
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "你好 fixture\n\n\nWall time: «WT» seconds"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

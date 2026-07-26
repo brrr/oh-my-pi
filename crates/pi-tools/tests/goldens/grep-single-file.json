@@ -1,0 +1,17 @@
+{
+	"tool": "grep",
+	"case": "single-file",
+	"params": {
+		"pattern": "needle",
+		"path": "src/lib.txt"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "[src/lib.txt#CE51]\n 1:lib header\n*2:needle alpha here\n 3:plain line\n*4:needle beta here\n 5:tail line"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

@@ -1,0 +1,17 @@
+{
+	"tool": "edit",
+	"case": "ambiguous",
+	"params": {
+		"path": "edit-target.txt",
+		"edits": [
+			{
+				"old_text": "dup line",
+				"new_text": "dupe line"
+			}
+		]
+	},
+	"content": null,
+	"isError": false,
+	"useless": false,
+	"threw": "Found 2 occurrences:\n\n  1 | alpha line\n  2 | target line to replace\n  3 | gamma line\n  4 | dup line\n  5 | dup line\n  6 | omega line\n  7 | \n\n  1 | alpha line\n  2 | target line to replace\n  3 | gamma line\n  4 | dup line\n  5 | dup line\n  6 | omega line\n  7 | \n\nAdd more context lines to disambiguate."
+}

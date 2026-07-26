@@ -1,0 +1,16 @@
+{
+	"tool": "bash",
+	"case": "no-output",
+	"params": {
+		"command": "true"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "(no output)\n\nWall time: «WT» seconds"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

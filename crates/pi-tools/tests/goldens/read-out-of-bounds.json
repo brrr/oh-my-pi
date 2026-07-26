@@ -1,0 +1,16 @@
+{
+	"tool": "read",
+	"case": "out-of-bounds",
+	"params": {
+		"path": "README.txt:999"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "Line 999 is beyond end of file (13 lines total). Use :1 to read from the start, or :13 to read the last line."
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

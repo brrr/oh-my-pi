@@ -1,0 +1,33 @@
+{
+	"tool": "edit",
+	"case": "multi-fail",
+	"params": {
+		"path": "edit-target.txt",
+		"edits": [
+			{
+				"old_text": "alpha line",
+				"new_text": "ALPHA line"
+			},
+			{
+				"old_text": "dup line",
+				"new_text": "dupe line"
+			},
+			{
+				"old_text": "omega line",
+				"new_text": "OMEGA line"
+			}
+		]
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "Successfully replaced text in edit-target.txt.\nError editing edit-target.txt (entry 2 of 3): Found 2 occurrences:\n\n  1 | ALPHA line\n  2 | target line to replace\n  3 | gamma line\n  4 | dup line\n  5 | dup line\n  6 | omega line\n  7 | \n\n  1 | ALPHA line\n  2 | target line to replace\n  3 | gamma line\n  4 | dup line\n  5 | dup line\n  6 | omega line\n  7 | \n\nAdd more context lines to disambiguate.\nEntry 1 was already applied.\nEntry 3 was NOT applied; re-read the file and re-issue only the failed and unapplied entries."
+		}
+	],
+	"isError": true,
+	"useless": false,
+	"threw": null,
+	"postFiles": {
+		"edit-target.txt": "ALPHA line\ntarget line to replace\ngamma line\ndup line\ndup line\nomega line\n"
+	}
+}

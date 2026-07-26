@@ -1,0 +1,17 @@
+{
+	"tool": "grep",
+	"case": "glob-path",
+	"params": {
+		"pattern": "alpha",
+		"path": "src/*.txt"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "# src/\n## app.txt#3809\n 3:  block one {\n*4:    alpha = 1\n 5:    beta = 2\n 6:    gamma = 3\n 7:    delta = 4\n## lib.txt#CE51\n 1:lib header\n*2:needle alpha here\n 3:plain line\n 4:needle beta here\n 5:tail line"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

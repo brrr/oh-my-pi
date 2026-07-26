@@ -1,0 +1,16 @@
+{
+	"tool": "glob",
+	"case": "dir",
+	"params": {
+		"path": "src"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "# src/\nlib.txt\napp.txt\n## util/\nhelper.txt"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

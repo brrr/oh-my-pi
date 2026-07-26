@@ -1,0 +1,16 @@
+{
+	"tool": "grep",
+	"case": "zero",
+	"params": {
+		"pattern": "zzz_no_such_token"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "No matches found"
+		}
+	],
+	"isError": false,
+	"useless": true,
+	"threw": null
+}

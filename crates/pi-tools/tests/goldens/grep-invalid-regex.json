@@ -1,0 +1,16 @@
+{
+	"tool": "grep",
+	"case": "invalid-regex",
+	"params": {
+		"pattern": "("
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "No matches found"
+		}
+	],
+	"isError": false,
+	"useless": true,
+	"threw": null
+}

@@ -1,0 +1,16 @@
+{
+	"tool": "read",
+	"case": "chinese",
+	"params": {
+		"path": "notes/中文.txt"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "[中文.txt#1ECA]\n1:中文文件第一行\n2:这里有一个 needle 标记\n3:结束行\n4:"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

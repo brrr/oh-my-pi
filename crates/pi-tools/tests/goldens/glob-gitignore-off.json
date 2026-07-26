@@ -1,0 +1,17 @@
+{
+	"tool": "glob",
+	"case": "gitignore-off",
+	"params": {
+		"path": "ignored/*",
+		"gitignore": false
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "# ignored/\nsecret.txt"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null
+}

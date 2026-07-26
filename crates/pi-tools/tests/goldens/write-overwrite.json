@@ -1,0 +1,20 @@
+{
+	"tool": "write",
+	"case": "overwrite",
+	"params": {
+		"path": "README.txt",
+		"content": "replaced readme\n"
+	},
+	"content": [
+		{
+			"type": "text",
+			"text": "Successfully wrote 16 bytes to README.txt"
+		}
+	],
+	"isError": false,
+	"useless": false,
+	"threw": null,
+	"postFiles": {
+		"README.txt": "replaced readme\n"
+	}
+}
