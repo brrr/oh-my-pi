@@ -58,3 +58,6 @@ packages/*/CHANGELOG.md merge=union
 
 # WP-1.2 C2 golden fixture: CRLF line endings are the fixture payload — never normalize.
 crates/pi-tools/tests/fixture-ws/crlf.txt -text
+
+# WP-1.3 session goldens: byte-exact JSONL (fixed-width 256B title slot) — never normalize.
+crates/pi-session/tests/goldens/* -text

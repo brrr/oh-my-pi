@@ -3618,6 +3618,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pi-session"
+version = "17.0.8"
+dependencies = [
+ "anyhow",
+ "pi-ai",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pi-shell"
 version = "17.0.8"
 dependencies = [

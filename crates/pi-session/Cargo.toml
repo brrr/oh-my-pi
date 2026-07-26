@@ -1,0 +1,26 @@
+# Pure-Rust session store for the headless omp control plane (WP-1.3). Reads and
+# writes the v3 JSONL session journal (`packages/coding-agent/src/session/`) and
+# rebuilds the read-only LLM message view (`build_session_context`) byte-parity
+# with the TS `loadSessionMessagesReadOnly`. No N-API: pure-core crate guarded by
+# `scripts/check-pure-core-no-napi.sh`.
+#
+# Scope (v3 only, per U-omp-29): version<3 migration, blob:sha256 dereference,
+# and the ≥8MiB streaming loader are deferred (registered in the module docs).
+[package]
+name = "pi-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+pi-ai.workspace = true
+
+[dev-dependencies]
