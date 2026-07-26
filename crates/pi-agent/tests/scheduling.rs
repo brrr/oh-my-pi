@@ -545,7 +545,7 @@ fn scripted(messages: Vec<AssistantMessage>) -> pi_agent::StreamFn {
 			.unwrap_or_else(|| assistant(vec![], StopReason::Stop));
 		let (sink, stream) = AssistantMessageEventStream::channel();
 		for event in emit_nonstream_events(&Arc::new(next)) {
-			sink.push(event);
+			assert!(sink.try_push(event));
 		}
 		stream
 	})

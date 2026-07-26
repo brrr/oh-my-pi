@@ -82,7 +82,7 @@ fn scripted(scripts: Vec<Vec<AssistantMessageEvent>>) -> pi_agent::StreamFn {
 		let events = queue.lock().unwrap().pop_front().unwrap_or_default();
 		let (sink, stream) = AssistantMessageEventStream::channel();
 		for event in events {
-			sink.push(event);
+			assert!(sink.try_push(event));
 		}
 		stream
 	})

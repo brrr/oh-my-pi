@@ -61,6 +61,21 @@ impl EventSink {
 		}
 		let _ = self.tx.send(event).await;
 	}
+
+	/// Synchronous push for non-async producers (tests / fake providers /
+	/// nonstream synthesis). Succeeds immediately while the bounded queue has
+	/// capacity; if the queue is full the event is dropped and `false` is
+	/// returned — real streaming producers must use [`Self::push`] for
+	/// backpressure.
+	pub fn try_push(&self, event: AssistantMessageEvent) -> bool {
+		if self.result.get().is_some() {
+			return false;
+		}
+		if let Some(message) = event.terminal_message() {
+			let _ = self.result.set(Arc::clone(message));
+		}
+		self.tx.try_send(event).is_ok()
+	}
 }
 
 /// Consumer side: an async event sequence plus a terminal-result accessor.

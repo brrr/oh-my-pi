@@ -325,7 +325,7 @@ fn fake_multi_call_stream_fn() -> StreamFn {
 			.unwrap_or_else(|| assistant(vec![], StopReason::Stop));
 		let (sink, stream) = AssistantMessageEventStream::channel();
 		for event in emit_nonstream_events(&Arc::new(next)) {
-			sink.push(event);
+			assert!(sink.try_push(event));
 		}
 		stream
 	})
