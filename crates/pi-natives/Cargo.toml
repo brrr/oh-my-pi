@@ -34,6 +34,7 @@ pi-diff.workspace = true
 pi-grep.workspace = true
 pi-iso.workspace = true
 pi-shell.workspace = true
+pi-term.workspace = true
 pi-walker.workspace = true
 pi-uutils-ctx = { path = "../pi-uutils-ctx" }
 portable-pty.workspace = true

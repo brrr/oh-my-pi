@@ -180,6 +180,7 @@ pi-diff = { path = "crates/pi-diff" }
 pi-grep = { path = "crates/pi-grep" }
 pi-iso = { path = "crates/pi-iso" }
 pi-shell = { path = "crates/pi-shell" }
+pi-term = { path = "crates/pi-term" }
 pi-walker = { path = "crates/pi-walker" }
 brush-core = { path = "crates/vendor/brush-core" }
 brush-builtins = { path = "crates/vendor/brush-builtins" }

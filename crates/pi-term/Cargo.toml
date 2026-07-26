@@ -1,0 +1,25 @@
+# Terminal-domain pure logic extracted from pi-natives as a pure Rust core (no
+# N-API). pi-natives keeps only a thin napi shell over this. Modules:
+# `pi_term::keys` (Kitty keyboard sequence parsing/matching), `pi_term::text`
+# (ANSI-aware UTF-16 text measurement/slicing; data plane is `&[u16]`), and
+# `pi_term::snapcompact` (bitmap/TrueType rasterization + PNG encoding, bundled
+# fonts included via `src/fonts/`).
+[package]
+name = "pi-term"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+fontdue.workspace = true
+phf.workspace = true
+png.workspace = true
+smallvec.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true

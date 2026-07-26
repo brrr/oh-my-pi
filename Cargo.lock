@@ -3595,6 +3595,7 @@ dependencies = [
  "pi-grep",
  "pi-iso",
  "pi-shell",
+ "pi-term",
  "pi-uutils-ctx",
  "pi-walker",
  "png",
@@ -3692,6 +3693,19 @@ dependencies = [
  "windows-sys 0.61.2",
  "winreg 0.56.0",
  "xxhash-rust",
+]
+
+[[package]]
+name = "pi-term"
+version = "17.0.8"
+dependencies = [
+ "anyhow",
+ "fontdue",
+ "phf 0.13.1",
+ "png",
+ "smallvec",
+ "unicode-segmentation",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
