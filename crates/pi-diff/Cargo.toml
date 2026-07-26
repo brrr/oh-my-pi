@@ -1,0 +1,16 @@
+# jsdiff v9 逐字节兼容的 diff 引擎，自 pi-natives 抽取为纯 Rust core（无 N-API）。
+# pi-natives 只保留其上的薄壳（Utf16String 边界 + #[napi(object)] DTO 转换）。
+# Entry points: `pi_diff::diff_lines` / `pi_diff::diff_line_runs` /
+# `pi_diff::structured_patch_hunks` / `pi_diff::diff_words`；数据面纯 `&[u16]`。
+[package]
+name = "pi-diff"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

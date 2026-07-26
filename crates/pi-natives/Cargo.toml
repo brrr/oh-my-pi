@@ -30,6 +30,7 @@ parking_lot.workspace = true
 phf.workspace = true
 flume.workspace = true
 pi-ast.workspace = true
+pi-diff.workspace = true
 pi-grep.workspace = true
 pi-iso.workspace = true
 pi-shell.workspace = true

@@ -3470,6 +3470,9 @@ dependencies = [
  "globset",
  "ignore",
  "phf 0.13.1",
+ "pi-grep",
+ "pi-shell",
+ "pi-walker",
  "serde",
  "tree-sitter",
  "tree-sitter-astro-next",
@@ -3531,6 +3534,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pi-diff"
+version = "17.0.8"
+
+[[package]]
 name = "pi-grep"
 version = "17.0.8"
 dependencies = [
@@ -3584,6 +3591,7 @@ dependencies = [
  "parking_lot",
  "phf 0.13.1",
  "pi-ast",
+ "pi-diff",
  "pi-grep",
  "pi-iso",
  "pi-shell",
