@@ -159,10 +159,29 @@ fn elapsed_ms(started: Instant) -> u64 {
 	u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-fn push_all(sink: &EventSink, events: Vec<AssistantMessageEvent>) {
+async fn push_all(sink: &EventSink, events: Vec<AssistantMessageEvent>) {
 	for event in events {
-		sink.push(event);
+		sink.push(event).await;
 	}
+}
+
+/// Push events, but let a cancellation preempt a producer suspended on the
+/// bounded queue (A6 backpressure can block `push` when the consumer stalls;
+/// the abort token must still win). Returns `false` when cancelled before all
+/// events were delivered — the caller then finishes as an aborted turn.
+async fn push_all_cancelable(
+	sink: &EventSink,
+	events: Vec<AssistantMessageEvent>,
+	cancel: &CancellationToken,
+) -> bool {
+	for event in events {
+		tokio::select! {
+			biased;
+			() = cancel.cancelled() => return false,
+			() = sink.push(event) => {},
+		}
+	}
+	true
 }
 
 /// How a single stream attempt ended.
@@ -199,7 +218,9 @@ pub async fn drive_stream<O: StreamOpener>(
 	let started = Instant::now();
 	// The leading `start` is pushed exactly once and survives retries (a
 	// pre-content retry has emitted no content events, so this stays coherent).
-	sink.push(AssistantMessageEvent::Start { partial: StreamingBuilder::new(meta).snapshot() });
+	sink
+		.push(AssistantMessageEvent::Start { partial: StreamingBuilder::new(meta).snapshot() })
+		.await;
 
 	let mut attempt: u32 = 0;
 	loop {
@@ -209,7 +230,7 @@ pub async fn drive_stream<O: StreamOpener>(
 				// The request never became a stream: standard error turn (no retry
 				// here — the opener already applied the head-level retry policy).
 				let message = std::sync::Arc::new(error_to_message(&error, meta));
-				push_all(sink, emit_nonstream_events(&message));
+				push_all(sink, emit_nonstream_events(&message)).await;
 				return;
 			},
 		};
@@ -228,7 +249,7 @@ pub async fn drive_stream<O: StreamOpener>(
 					continue;
 				}
 				builder.set_duration(elapsed_ms(started));
-				push_all(sink, builder.finish().1);
+				push_all(sink, builder.finish().1).await;
 				return;
 			},
 			AttemptEnd::Transport(message) => {
@@ -239,7 +260,7 @@ pub async fn drive_stream<O: StreamOpener>(
 				}
 				builder.set_duration(elapsed_ms(started));
 				let reason = format!("Connection error while streaming: {message}");
-				push_all(sink, builder.fail(StopReason::Error, reason).1);
+				push_all(sink, builder.fail(StopReason::Error, reason).1).await;
 				return;
 			},
 			AttemptEnd::FirstEventTimeout => {
@@ -254,19 +275,20 @@ pub async fn drive_stream<O: StreamOpener>(
 					builder
 						.fail(StopReason::Error, FIRST_EVENT_TIMEOUT_MSG.into())
 						.1,
-				);
+				)
+				.await;
 				return;
 			},
 			// Idle timeout is terminal — TS `isLocalIdleTimeout` bars retry so an
 			// active-but-stalled stream fails loudly instead of looping.
 			AttemptEnd::IdleTimeout => {
 				builder.set_duration(elapsed_ms(started));
-				push_all(sink, builder.fail(StopReason::Error, IDLE_TIMEOUT_MSG.into()).1);
+				push_all(sink, builder.fail(StopReason::Error, IDLE_TIMEOUT_MSG.into()).1).await;
 				return;
 			},
 			AttemptEnd::ErrorFrame(message) => {
 				builder.set_duration(elapsed_ms(started));
-				push_all(sink, builder.fail(StopReason::Error, message).1);
+				push_all(sink, builder.fail(StopReason::Error, message).1).await;
 				return;
 			},
 			AttemptEnd::Cancelled => {
@@ -276,7 +298,8 @@ pub async fn drive_stream<O: StreamOpener>(
 					builder
 						.fail(StopReason::Aborted, AiError::Aborted.to_string())
 						.1,
-				);
+				)
+				.await;
 				return;
 			},
 		}
@@ -355,7 +378,9 @@ async fn consume_attempt<S: ChunkStream>(
 				ctx.saw_first_content = true;
 				ctx.builder.set_ttft_once(elapsed_ms(started));
 			}
-			push_all(sink, ctx.builder.on_event(raw));
+			if !push_all_cancelable(sink, ctx.builder.on_event(raw), cancel).await {
+				return AttemptEnd::Cancelled;
+			}
 		}
 	}
 }

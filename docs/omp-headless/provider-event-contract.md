@@ -1,6 +1,6 @@
 # omp-headless · provider↔loop 事件接口契约
 
-> Contract-Version: 1.2（2026-07-26，WP-1.6a：接口本体（13 变体）不变；附录 B 三项流式简化升定案——流建立后重试 A1 / idle watchdog A2 / spliced 去重 A3，§7 补硬化语义）
+> Contract-Version: 1.3（2026-07-26，WP-1.6b 段 2A：接口本体（13 变体）不变；附录 B 再三项升定案——JSON repair A4 / thinking envelope unwrap A5 / 真背压 A6；§7 背压条款由「无界队列」升「有界 1024 + 生产者暂停」；A7 Harmony-leak 维持 defer）
 > Rust 权威实现：`crates/pi-ai/src/event.rs`（事件）+ `crates/pi-ai/src/message.rs`（消息模型）
 > TS 对照源：`packages/ai/src/types.ts:900-923`（事件联合）/ `:712` `AssistantMessage` / `packages/ai/src/utils/event-stream.ts:147`（流容器）
 > 变更纪律见 §9 —— **本契约的任何增删改（含 serde 名/tag 值）须先走宪章条款 2 plan 拍板，代码与文档同 commit 更新。**
@@ -108,7 +108,7 @@
 - **WP-1.1b 起 `Client::stream()` 为真 SSE 路径**（`sse.rs` 帧解析 + `builder.rs` 状态机）：delta 细粒度化、partial 渐进（usage 从 message_start 起有值，message_delta 到达时覆写 output 等字段并重算 total）、ttft/duration 真实记录；`emit_nonstream_events` 仍是 `complete()` 消费者与错误短路路径的合成器。事件种类/字段/不变量不变。
 - 流式补充语义：SSE `error` 帧 / 传输层断连 / 取消（`stream_with_cancel`）→ 终止 `error` 事件，**已累积内容保留在 error.error.content**；`message_stop` 之前断流 → dangling 块补发 `*_end` 后按当前 stop_reason 收终（TS anomaly 语义）；`message_start` 都没到 → error("stream ended before message_start")。
 - **WP-1.6a 硬化语义**（`stream_runner::drive_stream` 包住 `sse.rs` + `builder.rs`，附录 B A1/A2/A3 定案）：head 到达后按需**重开重试**（首内容前）+ **双看门狗**（first-event / idle），并对 spliced 重连**去重重放**。前置 `start` 事件全程只发一次（跨重试保持）；一次 head-open 失败仍走错误短路合成路径（`emit_nonstream_events`，请求从未成流）；上述不变量（首 `start`、恰一终止、contentIndex 单调、partial 单调）在硬化路径下继续成立。
-- 背压条款：流容器为无界队列（TS 对齐），生产者永不阻塞；SSE 逐帧生产的内存水位 = 未消费事件 × Arc 快照（O(指针)），风险与 TS 同级。真背压（有界 + 生产者暂停）仍留后续 WP 硬化议题（不在 1.6a 段 1 范围）。
+- 背压条款（**WP-1.6b 段 2A 升定案 A6**）：流容器为**有界队列**（`stream.rs` `EVENT_CHANNEL_CAPACITY = 1024`，tokio `mpsc::channel`），队列满时生产者 `push().await` 暂停直到消费者排空——真背压，慢消费者对 SSE 解析回路施反压而非无界涨内存。TS `EventStream` 是无界 `queue` 数组（`push` 永不阻塞），故 **1024 为 Rust 自定值**（TS 无显式容量）。终值 result 在 send **之前**同步记录，故仅 await `result()` 的消费者持续排空、永不与满队列死锁；`stream_with_cancel` 取消在生产者阻塞于满队列时经 `select` 仍即时生效（`stream_runner::push_all_cancelable`），产 `aborted` 终止。`next/result` 签名不变。
 
 ## 8. 错误映射
 
@@ -129,6 +129,7 @@
 | 1 | 2026-07-25 | 初版钉死（13 变体 + 消息模型 + 映射表 + 合成序列规范） | 1.1a |
 | 1.1 | 2026-07-26 | 接口本体不变；§7 补 SSE 流式细则与背压条款；新增附录 B（流式简化清单）；`stream_with_cancel` 取消语义 | 1.1b |
 | 1.2 | 2026-07-26 | 接口本体（13 变体）不变；附录 B 三项流式简化升**定案**——A1 流建立后首内容前重试（预算 10 + 退避）/ A2 双看门狗（first-event 可重试 + idle 终止）/ A3 spliced envelope 去重重放；新增 `stream_runner` 驱动 + 断流混沌 fixture 回归资产（`crates/pi-ai/tests/fixtures/sse_chaos_*.sse`）；§7 补硬化语义 | 1.6a |
+| 1.3 | 2026-07-26 | 接口本体（13 变体）不变；附录 B 再三项升**定案**——A4 JSON repair（`json_repair::parse_json_with_repair` = 严格 serde → RelaxedJson strict → 兜底）/ A5 thinking envelope unwrap（`builder.rs` 关闭时剥信封 + 清签名）/ A6 真背压（`stream.rs` 有界 1024 + 生产者 `push().await` 暂停，`push` 升 async、`push_all_cancelable` 保取消即时）；§7 背压条款重写；A7 Harmony-leak 维持 defer | 1.6b |
 
 ## 附录 A · DeepSeek Anthropic 兼容端点注意点（L2 实测 2026-07-25）
 
@@ -141,11 +142,12 @@
 
 ## 附录 B · WP-1.1b 流式简化清单（vs TS anthropic.ts，均为刻意取舍）
 
-| 项 | TS 行为 | Rust 1.1b | 归属 |
+| 项 | TS 行为 | Rust | 归属 |
 |---|---|---|---|
-| thinking envelope unwrap | `unwrapAnthropicThinkingEnvelope`（Harmony 泄漏清洗） | 不做 | 按需归 1.6 |
-| 工具参数流式解析 | throttled 增量 parse 进 arguments | arguments 保持 `{}` 至块关闭（partial JSON 仍经 toolcall_delta 下发）；关闭时一次 parse，失败落 `{__parseError,__rawJson}`（与 TS 兜底同形） | 定案 |
-| JSON repair | `parseJsonWithRepair` | 仅 serde 严格 parse + 兜底形状 | 按需归 1.6 |
+| thinking envelope unwrap | `unwrapAnthropicThinkingEnvelope`（anthropic.ts:1558） | thinking 块关闭时剥离嵌套 `<thinking>…</thinking>` 信封（trim + 逐层 while，仅当至少剥一层才生效）并清空随之失效的 signature；落点 `builder.rs` `finalize_block` BlockKind::Thinking（anthropic.ts:1990-1995） | **定案 A5（1.3）** |
+| 工具参数流式解析 | throttled 增量 parse 进 arguments | arguments 保持 `{}` 至块关闭（partial JSON 仍经 toolcall_delta 下发）；关闭时一次 parse，失败落 `{__parseError,__rawJson}`（与 TS 兜底同形） | 定案（F2 不推翻） |
+| JSON repair | `parseJsonWithRepair`（严格 `JSON.parse` → `RelaxedJson` strict 恢复） | 移植为 `json_repair::parse_json_with_repair`：严格 `serde_json` 快路 → `RelaxedJson`（partial=false）恢复（单引号/无引号键/尾逗号/注释/Python 字面量/裸词值/内引号），**仅 repair 仍失败**才落 `{__parseError,__rawJson}`（`__parseError`=relaxed 诊断串）。截断补全属 partial 模式，不移植（F2），故截断 buffer 落兜底 = TS strict 抛错。落点 `builder.rs` toolcall_end（anthropic.ts:1997-2024） | **定案 A4（1.3）** |
+| Harmony-leak detection（A7） | `harmony-leak.ts` text 块内 Harmony 标记清洗 | **不做**（DeepSeek 场景无 Harmony）；维持 defer（登记在 pi-agent lib.rs） | defer（本段不动 pi-agent） |
 | server-side fallback | opted-in 时采纳 fallback 模型/成本 | fallback 块一律忽略（= TS 未 opt-in 分支） | 定案（barm 场景不用该 beta） |
 | spliced envelope 重连 | 去重重放 | **去重重放**：重复 `message_start` 置 spliced 标志（`builder.rs` `saw_spliced_envelope`）；此后对已 `content_block_stop` 关闭过的 index（`closed_block_indexes`）的 replay `content_block_start` 静默丢弃，不产重复事件；未关闭 index 的重复 open 仍按原 anomaly 跳过（anthropic.ts:2141-2203/:2399） | **定案 A3（1.2）** |
 | 流建立后 provider 重试 | 首内容前可重试 | **首内容前可重试**：head 到达后、首个 `content_block_start`（`firstTokenTime`）**前**的传输错误 / 流早断（message_start 未到）/ first-event 超时 → 重开新请求，预算 `PROVIDER_MAX_RETRIES=10`，退避 `min(0.5·2^n, 8s)·(1−25% jitter)`（`calculateAnthropicRetryDelayMs`）；首内容后失败仍直接 `error` 事件（replay-unsafe）。落点 `stream_runner::drive_stream`（anthropic.ts:2028-2621） | **定案 A1（1.2）** |

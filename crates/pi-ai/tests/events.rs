@@ -250,10 +250,12 @@ async fn stream_delivers_terminal_and_result() {
 	let events = emit_nonstream_events(&message);
 	let expected = events.len();
 	for event in events {
-		sink.push(event);
+		sink.push(event).await;
 	}
 	// Push after terminal is a no-op.
-	sink.push(AssistantMessageEvent::Start { partial: Arc::clone(&message) });
+	sink
+		.push(AssistantMessageEvent::Start { partial: Arc::clone(&message) })
+		.await;
 	let mut seen = Vec::new();
 	while let Some(event) = stream.next().await {
 		let terminal = event.is_terminal();
@@ -271,7 +273,7 @@ async fn stream_result_without_iteration() {
 	let message = text_message();
 	let (sink, stream) = AssistantMessageEventStream::channel();
 	for event in emit_nonstream_events(&message) {
-		sink.push(event);
+		sink.push(event).await;
 	}
 	drop(sink);
 	let result = stream.result().await.unwrap();
@@ -282,7 +284,9 @@ async fn stream_result_without_iteration() {
 async fn stream_without_terminal_errors() {
 	let message = text_message();
 	let (sink, stream) = AssistantMessageEventStream::channel();
-	sink.push(AssistantMessageEvent::Start { partial: Arc::clone(&message) });
+	sink
+		.push(AssistantMessageEvent::Start { partial: Arc::clone(&message) })
+		.await;
 	drop(sink);
 	assert!(matches!(stream.result().await, Err(AiError::StreamEnded)));
 }

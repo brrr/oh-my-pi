@@ -12,6 +12,7 @@ pub mod client;
 pub mod convert;
 pub mod error;
 pub mod event;
+pub mod json_repair;
 pub mod message;
 pub mod schema;
 pub mod sse;

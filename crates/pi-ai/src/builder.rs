@@ -6,12 +6,23 @@
 //! mismatches, unknown block kinds) are skipped without failing the turn, like
 //! the TS `reportAnthropicEnvelopeAnomaly` paths.
 //!
-//! Deliberately not ported in WP-1.1b (contract appendix B): thinking-envelope
-//! unwrap, mid-stream throttled argument parsing (`arguments` stays `{}` until
-//! the block closes; the raw partial JSON still flows via `toolcall_delta`),
-//! JSON repair beyond the TS `__parseError`/`__rawJson` fallback shape,
-//! server-side fallback model adoption (fallback blocks are ignored — the TS
-//! behavior when the beta is not opted in), and cost calculation.
+//! WP-1.6 段 2A (contract appendix B, 升定案 A4 + A5):
+//! - **A4 JSON repair.** A tool-call block closing runs
+//!   [`parse_json_with_repair`] (strict `serde_json` fast path → relaxed
+//!   recovery); only when repair also fails does the `{__parseError,
+//!   __rawJson}` fallback shape apply (TS `finalizeStreamBlock` toolCall path,
+//!   anthropic.ts:1997-2024).
+//! - **A5 thinking-envelope unwrap.** A `thinking` block closing strips any
+//!   `<thinking>…</thinking>` envelope the model leaked into the block text and
+//!   clears the (now-stale) signature (TS `unwrapAnthropicThinkingEnvelope`,
+//!   anthropic.ts:1558-1566, applied at :1990-1995).
+//!
+//! Still not ported (contract appendix B): mid-stream throttled argument
+//! parsing (`arguments` stays `{}` until the block closes; the raw partial JSON
+//! still flows via `toolcall_delta` — F2 定案), Harmony-leak detection (A7,
+//! `DeepSeek` has no Harmony — kept deferred), server-side fallback model
+//! adoption (fallback blocks are ignored — the TS behavior when the beta is not
+//! opted in), and cost calculation.
 //!
 //! WP-1.6 (contract appendix B,升定案 A3): spliced-envelope replay dedup — a
 //! transparent reconnect can splice a second envelope (fresh `message_start`)
@@ -27,6 +38,7 @@ use std::{
 use crate::{
 	convert::{RequestMeta, convert_usage, map_stop_reason},
 	event::{AssistantMessageEvent, DoneReason, ErrorReason},
+	json_repair::parse_json_with_repair,
 	message::{
 		AssistantContent, AssistantMessage, RedactedThinkingContent, StopReason, TextContent,
 		ThinkingContent, ToolCall, Usage,
@@ -324,10 +336,19 @@ impl StreamingBuilder {
 				}]
 			},
 			BlockKind::Thinking => {
-				let AssistantContent::Thinking(block) = &self.working.content[content_index] else {
-					return Vec::new();
+				// A5: strip a leaked `<thinking>…</thinking>` envelope and drop the
+				// now-stale signature before finalizing (anthropic.ts:1990-1995).
+				let content = {
+					let AssistantContent::Thinking(block) = &mut self.working.content[content_index]
+					else {
+						return Vec::new();
+					};
+					if let Some(unwrapped) = unwrap_thinking_envelope(&block.thinking) {
+						block.thinking = unwrapped;
+						block.thinking_signature = None;
+					}
+					block.thinking.clone()
 				};
-				let content = block.thinking.clone();
 				vec![AssistantMessageEvent::ThinkingEnd {
 					content_index,
 					content,
@@ -340,12 +361,15 @@ impl StreamingBuilder {
 					return Vec::new();
 				};
 				if !final_json.is_empty() {
-					block.arguments = match serde_json::from_str(&final_json) {
+					// A4: strict parse → relaxed repair; only a repair failure falls to
+					// the TS `{__parseError, __rawJson}` shape (anthropic.ts:1997-2024).
+					// The builder never runs a mid-stream throttled parse (F2), so no
+					// partially-recovered arguments exist to preserve — the fallback is
+					// reached exactly when repair yields nothing.
+					block.arguments = match parse_json_with_repair(&final_json) {
 						Ok(value) => value,
-						// TS fallback shape when nothing was recovered
-						// (anthropic.ts:2013-2022).
-						Err(parse_error) => serde_json::json!({
-							"__parseError": parse_error.to_string(),
+						Err(repair_error) => serde_json::json!({
+							"__parseError": repair_error,
 							"__rawJson": truncate_for_error(&final_json),
 						}),
 					};
@@ -512,4 +536,146 @@ fn truncate_for_error(json: &str) -> String {
 		cut -= 1;
 	}
 	format!("{}… [truncated {} chars]", &json[..cut], json.len() - cut)
+}
+
+const THINKING_ENVELOPE_OPEN: &str = "<thinking>";
+const THINKING_ENVELOPE_CLOSE: &str = "</thinking>";
+
+/// Strip nested `<thinking>…</thinking>` envelopes a model may leak into a
+/// thinking block's text, returning `Some(unwrapped)` only when at least one
+/// layer was removed (`unwrapAnthropicThinkingEnvelope`, anthropic.ts:1558).
+fn unwrap_thinking_envelope(text: &str) -> Option<String> {
+	let mut current = text.trim().to_string();
+	let mut stripped = false;
+	while current.len() >= THINKING_ENVELOPE_OPEN.len() + THINKING_ENVELOPE_CLOSE.len()
+		&& current.starts_with(THINKING_ENVELOPE_OPEN)
+		&& current.ends_with(THINKING_ENVELOPE_CLOSE)
+	{
+		let inner =
+			&current[THINKING_ENVELOPE_OPEN.len()..current.len() - THINKING_ENVELOPE_CLOSE.len()];
+		current = inner.trim().to_string();
+		stripped = true;
+	}
+	stripped.then_some(current)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{StreamingBuilder, unwrap_thinking_envelope};
+	use crate::{
+		convert::RequestMeta, event::AssistantMessageEvent, message::AssistantContent,
+		wire::RawMessageStreamEvent,
+	};
+
+	fn meta() -> RequestMeta {
+		RequestMeta {
+			api:       "anthropic-messages".into(),
+			provider:  "deepseek".into(),
+			model:     "deepseek-v4-flash".into(),
+			timestamp: 1_753_500_000_000,
+			duration:  None,
+		}
+	}
+
+	fn wire(json: &str) -> RawMessageStreamEvent {
+		serde_json::from_str(json).unwrap_or_else(|error| panic!("parse wire event {json}: {error}"))
+	}
+
+	const MESSAGE_START: &str = r#"{"type":"message_start","message":{"id":"msg-x","usage":{"input_tokens":1,"output_tokens":0}}}"#;
+
+	// ---- A5: thinking-envelope unwrap ----------------------------------------
+
+	#[test]
+	fn unwrap_strips_single_envelope() {
+		assert_eq!(unwrap_thinking_envelope("<thinking>hi</thinking>"), Some("hi".to_string()));
+	}
+
+	#[test]
+	fn unwrap_strips_nested_envelopes_and_trims() {
+		assert_eq!(
+			unwrap_thinking_envelope("<thinking> <thinking> deep </thinking> </thinking>"),
+			Some("deep".to_string())
+		);
+	}
+
+	#[test]
+	fn unwrap_returns_none_without_envelope() {
+		assert_eq!(unwrap_thinking_envelope("plain reasoning"), None);
+		// A lone open tag is not a wrapped envelope.
+		assert_eq!(unwrap_thinking_envelope("<thinking>unterminated"), None);
+	}
+
+	#[test]
+	fn thinking_end_unwraps_and_clears_signature() {
+		let mut builder = StreamingBuilder::new(&meta());
+		builder.on_event(wire(MESSAGE_START));
+		builder.on_event(wire(
+			r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"<thinking>real</thinking>","signature":"sig-abc"}}"#,
+		));
+		let events = builder.on_event(wire(r#"{"type":"content_block_stop","index":0}"#));
+		let end = events
+			.iter()
+			.find(|event| matches!(event, AssistantMessageEvent::ThinkingEnd { .. }))
+			.expect("thinking_end emitted");
+		let AssistantMessageEvent::ThinkingEnd { content, .. } = end else {
+			unreachable!()
+		};
+		assert_eq!(content, "real", "envelope stripped from thinking_end content");
+
+		let (message, _) = builder.finish();
+		match &message.content[0] {
+			AssistantContent::Thinking(block) => {
+				assert_eq!(block.thinking, "real");
+				assert!(block.thinking_signature.is_none(), "stale signature cleared");
+			},
+			other => panic!("expected thinking block, got {other:?}"),
+		}
+	}
+
+	// ---- A4: JSON repair at toolcall_end -------------------------------------
+
+	fn drive_toolcall(partial_json: &str) -> serde_json::Value {
+		let mut builder = StreamingBuilder::new(&meta());
+		builder.on_event(wire(MESSAGE_START));
+		builder.on_event(wire(
+			r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-1","name":"do_thing"}}"#,
+		));
+		let delta = serde_json::json!({
+			"type": "content_block_delta",
+			"index": 0,
+			"delta": {"type": "input_json_delta", "partial_json": partial_json},
+		});
+		builder.on_event(serde_json::from_value(delta).unwrap());
+		let events = builder.on_event(wire(r#"{"type":"content_block_stop","index":0}"#));
+		events
+			.iter()
+			.find_map(|event| match event {
+				AssistantMessageEvent::ToolcallEnd { tool_call, .. } => {
+					Some(tool_call.arguments.clone())
+				},
+				_ => None,
+			})
+			.expect("toolcall_end emitted")
+	}
+
+	#[test]
+	fn toolcall_end_repairs_malformed_json() {
+		// Trailing comma + single quotes: strict parse fails, repair succeeds.
+		let args = drive_toolcall("{'path': 'a.rs',}");
+		assert_eq!(args, serde_json::json!({"path":"a.rs"}));
+	}
+
+	#[test]
+	fn toolcall_end_clean_json_needs_no_repair() {
+		let args = drive_toolcall(r#"{"path":"a.rs","n":3}"#);
+		assert_eq!(args, serde_json::json!({"path":"a.rs","n":3}));
+	}
+
+	#[test]
+	fn toolcall_end_unrepairable_json_falls_back() {
+		// Truncated buffer: neither strict nor repair recovers → fallback shape.
+		let args = drive_toolcall(r#"{"path": "untermin"#);
+		assert!(args.get("__parseError").is_some(), "got {args:?}");
+		assert_eq!(args["__rawJson"], serde_json::json!(r#"{"path": "untermin"#));
+	}
 }
