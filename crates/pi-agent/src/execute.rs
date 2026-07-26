@@ -1,13 +1,45 @@
-//! Serial single-tool execution + tool-result coercion + synthetic
-//! placeholders.
+//! Shared/exclusive tool scheduling + abort propagation + tool-result coercion
+//! + synthetic placeholders.
 //!
-//! Port of the tool-execution core of `agent-loop.ts`, folded to the WP-1.4a
-//! face:
-//! - [`execute_tool_calls`] runs the assistant turn's tool calls **strictly
-//!   serially** in content order. The TS shared/exclusive concurrency scheduler
-//!   (`agent-loop.ts:2210-2238`) is deferred to WP-1.4b — every tool runs
-//!   sequentially here, which is a safe subset of "shared" (side-effecting
-//!   tools never overlap).
+//! Port of the tool-execution core of `agent-loop.ts` (`executeToolCalls`
+//! :1786-2434), carrying the WP-1.4b concurrency face that WP-1.4a folded to a
+//! serial subset:
+//! - [`execute_tool_calls`] schedules the assistant turn's tool calls by their
+//!   [`Concurrency`] class, mirroring the TS promise-chain scheduler
+//!   (:2210-2238). [`Concurrency::Shared`] calls run concurrently with each
+//!   other; a [`Concurrency::Exclusive`] call is a barrier — it waits for every
+//!   prior in-flight call, runs alone, then releases the calls after it. The TS
+//!   chaining (`start = exclusive ? Promise.all([lastExclusive,
+//!   ...sharedTasks]) : lastExclusive`) is equivalent to running the batch as
+//!   ordered segments: a maximal run of consecutive shared calls executes as
+//!   one concurrent group, and each exclusive call is a singleton barrier
+//!   between groups. The concurrency is **cooperative** (a [`FuturesUnordered`]
+//!   driven on the loop task, no `tokio::spawn`), which matches the TS
+//!   single-threaded Promise model exactly — overlap happens at `await` points,
+//!   and a tool that never yields runs to completion in content order.
+//! - Results are collected in **completion order** (TS `emittedToolResults`
+//!   push order, :1948): the returned `Vec` — which the loop backfills into
+//!   `ctx.messages` verbatim (agent-loop.ts:1074-1085) — and the
+//!   `tool_execution_end` events both follow real completion order, not
+//!   initiation order. The tail sweep (:2262-2272) appends a skipped result for
+//!   every un-run record, in record order, after the completed ones.
+//! - Panic isolation mirrors `Promise.allSettled` (:2254): a tool that panics
+//!   is caught (`catch_unwind`) and turned into an `is_error` result rather
+//!   than unwinding the whole batch.
+//! - Abort propagation (:2023-2185): a call reached under an already-aborted
+//!   token, or cut off mid-flight before it completed, yields a clean aborted
+//!   result; a call that **completed** keeps its real result even if the token
+//!   aborts at cleanup (`completedToolExecution`, :2170-2185).
+//! - Mid-batch steering (`checkSteering` :1868): before an exclusive barrier
+//!   runs, [`SteeringPeek`] is polled non-consumingly; a queued steer stops the
+//!   batch — in-flight shared calls finish, but the exclusive and every record
+//!   after it are paired with a skipped result ([`create_skipped_tool_result`],
+//!   `createSkippedToolResult` :2411) and not executed. Shared-only batches
+//!   have no barrier, so they are not interrupted mid-flight (read-only tools
+//!   are safe to complete); the steer is drained at the batch boundary by the
+//!   loop. The TS dual-signal `interruptible` split (:1858, a peer-IRC signal
+//!   that only aborts interruptible waits) is not modeled — one [`CancelToken`]
+//!   face.
 //! - [`coerce_tool_result`] mirrors `coerceToolResult` (:267-330): since a Rust
 //!   [`ToolResult`] is already a typed `Vec<UserContentBlock>`, the only
 //!   surviving regularization is the empty-error guard (an `is_error` result
@@ -20,23 +52,34 @@
 //!   aborted / length / skipped turns.
 //!
 //! Deferred from the TS execute path (see `lib.rs` defer list): intent tracing,
-//! `beforeToolCall`/`afterToolCall` hooks, per-tool interruptible/IRC signals,
-//! telemetry spans, and the streaming `tool_execution_update` emission.
+//! `beforeToolCall`/`afterToolCall` hooks, the dual-signal `interruptible`/IRC
+//! split, the process-wide pause gate, `SoftToolRequirement`, telemetry spans,
+//! and the streaming `tool_execution_update` emission. The dynamic
+//! `concurrency(args)` resolver (TS `bash` pty→exclusive) is deferred at the
+//! [`Concurrency`] type (a tool resolves to one static class here).
 
 use std::{
 	collections::BTreeSet,
+	panic::AssertUnwindSafe,
 	time::{SystemTime, UNIX_EPOCH},
 };
 
+use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use pi_ai::{
 	TextContent, UserContentBlock,
 	message::{AssistantContent, AssistantMessage, ToolCall, ToolResultMessage},
 };
 use pi_shell::cancel::CancelToken;
-use pi_tools::{DynTool, ToolResult};
+use pi_tools::{Concurrency, DynTool, ToolResult};
 use serde_json::{Map, Value, json};
 
 use crate::event::{AgentEvent, AgentEventSink};
+
+/// Non-consuming steering peek (`config.hasSteeringMessages`).
+///
+/// `checkSteering` (agent-loop.ts:1868): returns `true` when a steering message
+/// is queued; used mid-batch to interrupt before an exclusive barrier.
+pub type SteeringPeek<'a> = Option<&'a (dyn Fn() -> bool + Send + Sync)>;
 
 /// `EMPTY_ERROR_TOOL_RESULT_TEXT` (agent-loop.ts:257).
 const EMPTY_ERROR_TOOL_RESULT_TEXT: &str = "Tool failed with no output.";
@@ -281,88 +324,222 @@ pub fn create_aborted_tool_result(
 	message
 }
 
-/// Run every tool call of `message` serially, in content order.
+/// Build a plain (non-synthetic) `is_error` [`ToolResult`] from a single text
+/// block (used for unknown-tool / validation / abort / panic outcomes).
+fn error_result(text: impl Into<String>) -> ToolResult {
+	ToolResult {
+		content:  vec![UserContentBlock::Text(TextContent {
+			text:           text.into(),
+			text_signature: None,
+		})],
+		details:  None,
+		is_error: true,
+		useless:  false,
+	}
+}
+
+/// `createToolSignalAbortedResult` (agent-loop.ts:2404): the plain `is_error`
+/// result for a tool cut off by an aborted run token (no `__synthetic` detail —
+/// distinct from [`create_aborted_tool_result`]).
+fn tool_signal_aborted_result() -> ToolResult {
+	error_result("Tool was not executed because the run was aborted.")
+}
+
+/// `createSkippedToolResult` (agent-loop.ts:2411): the plain `is_error` result
+/// for a tool skipped because a steering message is queued. Emits the full
+/// `tool_execution_start`/`_end` + `message_start`/`_end` pairing and returns
+/// the `toolResult` message.
+fn create_skipped_tool_result(sink: &AgentEventSink, call: &ToolCall) -> ToolResultMessage {
+	let result = coerce_tool_result(error_result(
+		"Skipped due to queued user message. Do not count this skipped result as completed work or \
+		 verification. After the queued message is handled on the next step, retry the skipped tool \
+		 if it is still needed.",
+	));
+	emit_tool_start(sink, call, &call.arguments);
+	emit_tool_end(sink, call, &result, true)
+}
+
+/// Extract a human-readable message from a caught panic payload.
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+	payload.downcast_ref::<&'static str>().map_or_else(
+		|| {
+			payload
+				.downcast_ref::<String>()
+				.cloned()
+				.unwrap_or_else(|| "tool panicked".to_owned())
+		},
+		|s| (*s).to_owned(),
+	)
+}
+
+/// Run one resolved tool call to completion and emit its lifecycle events.
 ///
-/// For each call: resolve the tool by name → validate args → push
-/// `tool_execution_start` → `tool.execute` → coerce → emit
-/// `tool_execution_end` + the `toolResult` message events. An unknown tool
-/// name, a validation miss, or a thrown [`pi_tools::ToolError`] each yield an
-/// `is_error` result and continue the batch (a failing tool never breaks the
-/// chain). A tool call reached after the token is aborted gets a skipped
-/// placeholder instead of executing.
+/// Mirrors the per-call `runTool` body (agent-loop.ts:1953-2189): resolve /
+/// validate → abort pre-check → `tool_execution_start` → execute (with panic
+/// isolation) → coerce → post-abort adjustment → `tool_execution_end` + the
+/// `toolResult` message. Unknown tool, validation miss, thrown
+/// [`pi_tools::ToolError`], and panic each become an `is_error` result (the
+/// batch never breaks). A call reached under an aborted token, or cut off
+/// mid-flight before it completed, yields a clean aborted result; a call that
+/// completed keeps its real result even if the token aborted at cleanup.
+async fn run_tool(
+	tool: Option<&dyn DynTool>,
+	call: &ToolCall,
+	ct: &CancelToken,
+	sink: &AgentEventSink,
+) -> ToolResultMessage {
+	// Unknown tool → isError result (agent-loop.ts:1986 `Tool <name> not found`).
+	let Some(tool) = tool else {
+		emit_tool_start(sink, call, &call.arguments);
+		let result = coerce_tool_result(error_result(format!("Tool {} not found", call.name)));
+		return emit_tool_end(sink, call, &result, true);
+	};
+
+	// Missing required arg → isError result (validateToolArguments, :1989).
+	if let Err(err) = validate_args(&tool.input_schema(), &call.arguments) {
+		emit_tool_start(sink, call, &call.arguments);
+		let result = coerce_tool_result(error_result(err));
+		return emit_tool_end(sink, call, &result, true);
+	}
+
+	// Aborted before start → clean aborted result, do not execute (:2023-2032).
+	if ct.aborted() {
+		emit_tool_start(sink, call, &call.arguments);
+		let result = coerce_tool_result(tool_signal_aborted_result());
+		return emit_tool_end(sink, call, &result, true);
+	}
+
+	emit_tool_start(sink, call, &call.arguments);
+	// `completedToolExecution` (:2103): true only when `execute` resolves
+	// normally. A thrown `ToolError` or a panic leaves it false.
+	let (result, is_error, completed) =
+		match AssertUnwindSafe(tool.execute(&call.id, call.arguments.clone(), ct))
+			.catch_unwind()
+			.await
+		{
+			Ok(Ok(raw)) => {
+				let coerced = coerce_tool_result(raw);
+				let is_error = coerced.is_error;
+				(coerced, is_error, true)
+			},
+			// A thrown ToolError becomes an isError result (:2120-2127).
+			Ok(Err(err)) => (coerce_tool_result(error_result(err.to_string())), true, false),
+			// Promise.allSettled parity (:2254): a panic is caught, not propagated.
+			Err(payload) => (
+				coerce_tool_result(error_result(format!("Tool panicked: {}", panic_text(&*payload)))),
+				true,
+				false,
+			),
+		};
+
+	// completedToolExecution (:2170-2185): a tool that finished keeps its real
+	// result even if the token aborted at cleanup; a tool cut off before
+	// completing under an aborted token reports the clean aborted result.
+	let (result, is_error) = if ct.aborted() && !completed {
+		(coerce_tool_result(tool_signal_aborted_result()), true)
+	} else {
+		(result, is_error)
+	};
+	emit_tool_end(sink, call, &result, is_error)
+}
+
+/// A resolved tool call plus its scheduling class.
+struct Record<'a> {
+	call:        ToolCall,
+	tool:        Option<&'a dyn DynTool>,
+	concurrency: Concurrency,
+}
+
+/// Drive an in-flight group of shared tool calls concurrently to completion,
+/// appending their results in **completion order** and marking each record run.
+async fn flush_shared(
+	records: &[Record<'_>],
+	batch: &[usize],
+	ct: &CancelToken,
+	sink: &AgentEventSink,
+	results: &mut Vec<ToolResultMessage>,
+	ran: &mut [bool],
+) {
+	if batch.is_empty() {
+		return;
+	}
+	let mut inflight = FuturesUnordered::new();
+	for &i in batch {
+		let record = &records[i];
+		inflight.push(async move { (i, run_tool(record.tool, &record.call, ct, sink).await) });
+	}
+	while let Some((i, message)) = inflight.next().await {
+		ran[i] = true;
+		results.push(message);
+	}
+}
+
+/// Schedule the assistant turn's tool calls by [`Concurrency`] class.
+///
+/// Shared calls run concurrently; each exclusive call is a barrier that waits
+/// for every prior in-flight call, runs alone, then releases the rest — the
+/// TS promise-chain scheduler (agent-loop.ts:2210-2238), executed as ordered
+/// segments (shared groups run concurrently, exclusives are singleton
+/// barriers). Results are collected in completion order (`emittedToolResults`,
+/// :1948); the tail sweep (:2262-2272) appends a skipped result for any un-run
+/// record. `has_steering`, when queued, interrupts the batch **before an
+/// exclusive barrier** (`checkSteering`, :1868): in-flight shared calls finish,
+/// and the exclusive plus every record after it get a skipped result.
 pub async fn execute_tool_calls(
 	tools: &[Box<dyn DynTool>],
 	message: &AssistantMessage,
 	ct: &CancelToken,
 	sink: &AgentEventSink,
+	has_steering: SteeringPeek<'_>,
 ) -> Vec<ToolResultMessage> {
-	let calls = tool_calls_of(message);
-	let mut results = Vec::with_capacity(calls.len());
-	for call in &calls {
-		// Already aborted → skipped placeholder, do not execute (:2411 semantics).
-		if ct.aborted() {
-			results.push(create_aborted_tool_result(
-				sink,
-				call,
-				SyntheticReason::Skipped,
-				Some("run was aborted before the tool could start"),
-			));
-			continue;
-		}
+	let records: Vec<Record> = tool_calls_of(message)
+		.into_iter()
+		.map(|call| {
+			// Match on `name`; an unknown tool resolves to `None` (concurrency
+			// `shared`, agent-loop.ts:2226 `?? "shared"`).
+			let tool = tools
+				.iter()
+				.find(|t| t.name() == call.name)
+				.map(AsRef::as_ref);
+			let concurrency = tool.map_or(Concurrency::Shared, DynTool::concurrency);
+			Record { call, tool, concurrency }
+		})
+		.collect();
 
-		let Some(tool) = tools.iter().find(|t| t.name() == call.name) else {
-			// Unknown tool → isError result (:1989 `Tool <name> not found`).
-			emit_tool_start(sink, call, &call.arguments);
-			let result = coerce_tool_result(ToolResult {
-				content:  vec![UserContentBlock::Text(TextContent {
-					text:           format!("Tool {} not found", call.name),
-					text_signature: None,
-				})],
-				details:  None,
-				is_error: true,
-				useless:  false,
-			});
-			results.push(emit_tool_end(sink, call, &result, true));
-			continue;
-		};
+	let mut results: Vec<ToolResultMessage> = Vec::with_capacity(records.len());
+	let mut ran = vec![false; records.len()];
+	let mut shared_batch: Vec<usize> = Vec::new();
+	let mut interrupted = false;
 
-		if let Err(err) = validate_args(&tool.input_schema(), &call.arguments) {
-			emit_tool_start(sink, call, &call.arguments);
-			let result = coerce_tool_result(ToolResult {
-				content:  vec![UserContentBlock::Text(TextContent {
-					text:           err,
-					text_signature: None,
-				})],
-				details:  None,
-				is_error: true,
-				useless:  false,
-			});
-			results.push(emit_tool_end(sink, call, &result, true));
-			continue;
-		}
-
-		emit_tool_start(sink, call, &call.arguments);
-		let (result, is_error) = match tool.execute(&call.id, call.arguments.clone(), ct).await {
-			Ok(raw) => {
-				let coerced = coerce_tool_result(raw);
-				let is_error = coerced.is_error;
-				(coerced, is_error)
+	for idx in 0..records.len() {
+		match records[idx].concurrency {
+			Concurrency::Shared => shared_batch.push(idx),
+			Concurrency::Exclusive => {
+				// Barrier: let the in-flight shared group finish first.
+				flush_shared(&records, &shared_batch, ct, sink, &mut results, &mut ran).await;
+				shared_batch.clear();
+				// checkSteering (:1868): a queued steer stops the batch here — the
+				// exclusive and every record after it are tail-swept as skipped.
+				if has_steering.is_some_and(|peek| peek()) {
+					interrupted = true;
+					break;
+				}
+				let message = run_tool(records[idx].tool, &records[idx].call, ct, sink).await;
+				ran[idx] = true;
+				results.push(message);
 			},
-			Err(err) => {
-				// A thrown ToolError becomes an isError result (:2120-2127).
-				let result = coerce_tool_result(ToolResult {
-					content:  vec![UserContentBlock::Text(TextContent {
-						text:           err.to_string(),
-						text_signature: None,
-					})],
-					details:  None,
-					is_error: true,
-					useless:  false,
-				});
-				(result, true)
-			},
-		};
-		results.push(emit_tool_end(sink, call, &result, is_error));
+		}
+	}
+	if !interrupted {
+		flush_shared(&records, &shared_batch, ct, sink, &mut results, &mut ran).await;
+	}
+
+	// Tail sweep (:2262-2272): pair every un-run record with a skipped result so
+	// the tool_use/tool_result pairing the provider API mandates is preserved.
+	for (i, record) in records.iter().enumerate() {
+		if !ran[i] {
+			results.push(create_skipped_tool_result(sink, &record.call));
+		}
 	}
 	results
 }

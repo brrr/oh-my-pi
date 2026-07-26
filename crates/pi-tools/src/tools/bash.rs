@@ -346,6 +346,12 @@ impl Tool for BashTool {
 		"bash"
 	}
 
+	// `concurrency` uses the trait default (`Shared`). The TS `bash` tool declares
+	// a dynamic `concurrency = (args) => args.pty ? "exclusive" : "shared"`
+	// (`packages/coding-agent/src/tools/bash.ts:422`); the non-pty default is
+	// `shared`, which the trait default matches. The args-driven pty→exclusive
+	// upgrade is deferred to WP-1.4b (`Concurrency` doc registers the deferral).
+
 	fn description(&self) -> &str {
 		crate::prompts::BASH
 	}

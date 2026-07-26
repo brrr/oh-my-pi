@@ -3452,6 +3452,7 @@ dependencies = [
 name = "pi-agent"
 version = "17.0.8"
 dependencies = [
+ "futures",
  "pi-ai",
  "pi-shell",
  "pi-tools",

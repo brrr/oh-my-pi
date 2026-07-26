@@ -87,21 +87,39 @@ pub struct AgentContext {
 	pub tools:         Vec<Box<dyn DynTool>>,
 }
 
+/// Consuming steering-message dequeue (TS `config.getSteeringMessages`).
+///
+/// Returns and removes any messages the host queued while the agent was
+/// working; drained at the loop's injection boundaries (loop start, after each
+/// tool batch, and when the agent would otherwise stop).
+pub type GetSteeringFn = Box<dyn Fn() -> Vec<Message> + Send + Sync>;
+
+/// Non-consuming steering peek (TS `config.hasSteeringMessages`). Reports
+/// whether a steer is queued without dequeuing it; polled mid-batch to
+/// interrupt before an exclusive barrier.
+pub type HasSteeringFn = Box<dyn Fn() -> bool + Send + Sync>;
+
 /// Loop configuration. The provider knobs the loop threads into each request
 /// plus the [`StreamFn`] injection point.
 pub struct AgentConfig {
-	pub model:       String,
-	pub max_tokens:  u64,
-	pub temperature: Option<f64>,
+	pub model:                 String,
+	pub max_tokens:            u64,
+	pub temperature:           Option<f64>,
 	/// Consecutive tool-turn cap (defaults to [`DEFAULT_MAX_STEPS`]).
-	pub max_steps:   usize,
+	pub max_steps:             usize,
 	/// Provider-call injection point. `None` fails every turn with an error
 	/// message (a misconfiguration, surfaced rather than panicking).
-	pub stream_fn:   Option<StreamFn>,
+	pub stream_fn:             Option<StreamFn>,
+	/// Consuming steering dequeue (TS `getSteeringMessages`). `None` = no
+	/// steering (the outer loop always breaks when the agent would stop).
+	pub get_steering_messages: Option<GetSteeringFn>,
+	/// Non-consuming steering peek (TS `hasSteeringMessages`). `None` = no
+	/// mid-batch interruption.
+	pub has_steering_messages: Option<HasSteeringFn>,
 }
 
 impl AgentConfig {
-	/// A config with the default step cap and no `stream_fn`.
+	/// A config with the default step cap and no `stream_fn` / steering.
 	#[must_use]
 	pub fn new(model: impl Into<String>, max_tokens: u64) -> Self {
 		Self {
@@ -110,6 +128,8 @@ impl AgentConfig {
 			temperature: None,
 			max_steps: DEFAULT_MAX_STEPS,
 			stream_fn: None,
+			get_steering_messages: None,
+			has_steering_messages: None,
 		}
 	}
 
@@ -117,6 +137,16 @@ impl AgentConfig {
 	#[must_use]
 	pub fn with_stream_fn(mut self, stream_fn: StreamFn) -> Self {
 		self.stream_fn = Some(stream_fn);
+		self
+	}
+
+	/// Wire the steering hooks: a consuming dequeue (drained at injection
+	/// boundaries) and a non-consuming peek (polled mid-batch before an
+	/// exclusive barrier).
+	#[must_use]
+	pub fn with_steering(mut self, get: GetSteeringFn, has: HasSteeringFn) -> Self {
+		self.get_steering_messages = Some(get);
+		self.has_steering_messages = Some(has);
 		self
 	}
 }
@@ -180,7 +210,24 @@ pub fn agent_loop_continue(
 	Ok(stream)
 }
 
-/// The shared loop body. `runLoopBody` (agent-loop.ts:758-1192), folded.
+/// Drain the consuming steering queue, or an empty vec when unset / aborted.
+/// `getSteeringMessages` (agent-loop.ts:793/1144/1173). Steering is never
+/// dequeued into a run that is already unwinding (`signal?.aborted ? []`).
+fn drain_steering(config: &AgentConfig, ct: &CancelToken) -> Vec<Message> {
+	if ct.aborted() {
+		return Vec::new();
+	}
+	config
+		.get_steering_messages
+		.as_ref()
+		.map_or_else(Vec::new, |get| get())
+}
+
+/// The shared loop body. `runLoopBody` (agent-loop.ts:758-1192).
+///
+/// Outer loop: continues when a queued steer would otherwise let the agent
+/// stop. Inner loop: streams one assistant turn, runs its tool batch, then
+/// drains steering into the next turn's pending messages.
 async fn run_loop_body(
 	ctx: &mut AgentContext,
 	new_messages: &mut Vec<Message>,
@@ -188,86 +235,120 @@ async fn run_loop_body(
 	ct: &CancelToken,
 	sink: &AgentEventSink,
 ) {
-	let mut has_more = true;
 	let mut first_turn = true;
 	let mut steps = 0usize;
+	// Steering typed while waiting is injected before the first model call (:793).
+	let mut pending: Vec<Message> = drain_steering(config, ct);
 
-	while has_more {
-		if steps >= config.max_steps {
-			break;
-		}
-		steps += 1;
+	'outer: loop {
+		let mut has_more = true;
 
-		if first_turn {
-			first_turn = false;
-		} else {
-			sink.push(AgentEvent::TurnStart);
-		}
-
-		let message = stream_assistant_response(ctx, config, ct, sink).await;
-		new_messages.push(Message::Assistant(Box::new(message.clone())));
-
-		// error / aborted: pair residual tool calls with placeholders, end.
-		if matches!(message.stop_reason, StopReason::Error | StopReason::Aborted) {
-			let reason = if message.stop_reason == StopReason::Aborted {
-				SyntheticReason::Aborted
-			} else {
-				SyntheticReason::Error
-			};
-			let mut tool_results = Vec::new();
-			for call in &tool_calls_of(&message) {
-				let result =
-					create_aborted_tool_result(sink, call, reason, message.error_message.as_deref());
-				ctx.messages.push(Message::ToolResult(result.clone()));
-				new_messages.push(Message::ToolResult(result.clone()));
-				tool_results.push(result);
+		// Inner loop: process tool calls + injected steering (:815).
+		while has_more || !pending.is_empty() {
+			if steps >= config.max_steps {
+				break 'outer;
 			}
+			steps += 1;
+
+			if first_turn {
+				first_turn = false;
+			} else {
+				sink.push(AgentEvent::TurnStart);
+			}
+
+			// Flush pending steering into context before the model call (:836-844).
+			for message in std::mem::take(&mut pending) {
+				sink.push(AgentEvent::MessageStart { message: message.clone() });
+				sink.push(AgentEvent::MessageEnd { message: message.clone() });
+				ctx.messages.push(message.clone());
+				new_messages.push(message);
+			}
+
+			let message = stream_assistant_response(ctx, config, ct, sink).await;
+			new_messages.push(Message::Assistant(Box::new(message.clone())));
+
+			// error / aborted: pair residual tool calls with placeholders, end.
+			if matches!(message.stop_reason, StopReason::Error | StopReason::Aborted) {
+				let reason = if message.stop_reason == StopReason::Aborted {
+					SyntheticReason::Aborted
+				} else {
+					SyntheticReason::Error
+				};
+				let mut tool_results = Vec::new();
+				for call in &tool_calls_of(&message) {
+					let result =
+						create_aborted_tool_result(sink, call, reason, message.error_message.as_deref());
+					ctx.messages.push(Message::ToolResult(result.clone()));
+					new_messages.push(Message::ToolResult(result.clone()));
+					tool_results.push(result);
+				}
+				sink.push(AgentEvent::TurnEnd {
+					message: Message::Assistant(Box::new(message)),
+					tool_results,
+				});
+				break 'outer;
+			}
+
+			let calls = tool_calls_of(&message);
+			// `toolUse` and `stop` both continue when tool calls are present
+			// (agent-loop.ts:1017): adaptive Opus emits tool calls under end_turn.
+			let runnable = matches!(message.stop_reason, StopReason::ToolUse | StopReason::Stop);
+			has_more = runnable && !calls.is_empty();
+
+			let mut tool_results = Vec::new();
+			if has_more {
+				let results = execute_tool_calls(
+					&ctx.tools,
+					&message,
+					ct,
+					sink,
+					config.has_steering_messages.as_deref(),
+				)
+				.await;
+				for result in &results {
+					ctx.messages.push(Message::ToolResult(result.clone()));
+					new_messages.push(Message::ToolResult(result.clone()));
+				}
+				tool_results = results;
+			} else if !calls.is_empty() {
+				// Non-runnable stop (`length` truncation) left tool_use blocks:
+				// pair each with a placeholder, do NOT execute (agent-loop.ts:1086).
+				let reason = if message.stop_reason == StopReason::Length {
+					SyntheticReason::Length
+				} else {
+					SyntheticReason::Skipped
+				};
+				for call in &calls {
+					let result = create_aborted_tool_result(sink, call, reason, None);
+					ctx.messages.push(Message::ToolResult(result.clone()));
+					new_messages.push(Message::ToolResult(result.clone()));
+					tool_results.push(result);
+				}
+				// A truncated turn with placeholders still continues so the model
+				// can retry with smaller calls (agent-loop.ts:1102).
+				if message.stop_reason == StopReason::Length && !tool_results.is_empty() {
+					has_more = true;
+				}
+			}
+
 			sink.push(AgentEvent::TurnEnd {
 				message: Message::Assistant(Box::new(message)),
 				tool_results,
 			});
-			break;
+
+			// Drain steering after the batch (:1144). If a steer landed, the inner
+			// condition (`!pending.is_empty()`) forces another turn even when the
+			// agent would otherwise stop.
+			pending = drain_steering(config, ct);
 		}
 
-		let calls = tool_calls_of(&message);
-		// `toolUse` and `stop` both continue when tool calls are present
-		// (agent-loop.ts:1017): adaptive Opus emits tool calls under end_turn.
-		let runnable = matches!(message.stop_reason, StopReason::ToolUse | StopReason::Stop);
-		has_more = runnable && !calls.is_empty();
-
-		let mut tool_results = Vec::new();
-		if has_more {
-			let results = execute_tool_calls(&ctx.tools, &message, ct, sink).await;
-			for result in &results {
-				ctx.messages.push(Message::ToolResult(result.clone()));
-				new_messages.push(Message::ToolResult(result.clone()));
-			}
-			tool_results = results;
-		} else if !calls.is_empty() {
-			// Non-runnable stop (`length` truncation) left tool_use blocks:
-			// pair each with a placeholder, do NOT execute (agent-loop.ts:1086).
-			let reason = if message.stop_reason == StopReason::Length {
-				SyntheticReason::Length
-			} else {
-				SyntheticReason::Skipped
-			};
-			for call in &calls {
-				let result = create_aborted_tool_result(sink, call, reason, None);
-				ctx.messages.push(Message::ToolResult(result.clone()));
-				new_messages.push(Message::ToolResult(result.clone()));
-				tool_results.push(result);
-			}
-			// A truncated turn with placeholders still continues so the model
-			// can retry with smaller calls (agent-loop.ts:1102).
-			if message.stop_reason == StopReason::Length && !tool_results.is_empty() {
-				has_more = true;
-			}
+		// Agent would stop here: re-poll for a steer that landed at the boundary
+		// (:1173 `lateSteering`). If present, re-enter the inner loop; else exit.
+		let late = drain_steering(config, ct);
+		if late.is_empty() {
+			break 'outer;
 		}
-
-		sink.push(AgentEvent::TurnEnd {
-			message: Message::Assistant(Box::new(message)),
-			tool_results,
-		});
+		pending = late;
 	}
 
 	sink.push(AgentEvent::AgentEnd { messages: new_messages.clone() });

@@ -14,7 +14,7 @@ use std::{future::Future, pin::Pin};
 use pi_shell::cancel::CancelToken;
 use serde_json::Value;
 
-use crate::tool::{Tool, ToolError, ToolResult};
+use crate::tool::{Concurrency, Tool, ToolError, ToolResult};
 
 /// Boxed future returned by [`DynTool::execute`]. Borrows `self`/`ct`/`id` for
 /// the duration of the call, matching the native [`Tool::execute`] lifetime.
@@ -31,6 +31,9 @@ pub trait DynTool: Send + Sync {
 
 	/// Wire `input_schema` in its pre-normalization shape.
 	fn input_schema(&self) -> Value;
+
+	/// Batch-scheduling class (TS `Tool.concurrency`, default `"shared"`).
+	fn concurrency(&self) -> Concurrency;
 
 	/// Execute the tool with parsed `args`, honoring `ct` for cancellation.
 	fn execute<'a>(
@@ -52,6 +55,10 @@ impl<T: Tool> DynTool for T {
 
 	fn input_schema(&self) -> Value {
 		Tool::input_schema(self)
+	}
+
+	fn concurrency(&self) -> Concurrency {
+		Tool::concurrency(self)
 	}
 
 	fn execute<'a>(

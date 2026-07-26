@@ -130,6 +130,36 @@ impl From<String> for ToolError {
 	}
 }
 
+/// Batch-scheduling class of a tool, mirroring the TS `Tool.concurrency` field
+/// (`packages/coding-agent/src/edit/index.ts:374`, `tools/write.ts:476`,
+/// `tools/bash.ts:422`).
+///
+/// The agent loop schedules a turn's tool calls by this class: [`Shared`] calls
+/// run concurrently with each other, while an [`Exclusive`] call is a barrier —
+/// it waits for every prior in-flight call, runs alone, then releases the
+/// following calls (see `pi_agent::execute`). The TS default when a tool
+/// declares no `concurrency` is `"shared"`, so [`Concurrency::Shared`] is the
+/// [`Default`] and the [`Tool::concurrency`] default-method return value.
+///
+/// **Deferred**: the TS dynamic form `concurrency = (args) => "shared" |
+/// "exclusive"` (used by `bash` to make `pty` runs exclusive) is not modeled —
+/// `concurrency()` takes no args, so a tool resolves to a single static class.
+/// `bash` is therefore always [`Shared`] here (its non-pty default); pty
+/// exclusivity is registered as a WP-1.4b deferral. Upgrading to the dynamic
+/// form would thread the parsed args into `concurrency(&self, args: &Value)`.
+///
+/// [`Shared`]: Concurrency::Shared
+/// [`Exclusive`]: Concurrency::Exclusive
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Concurrency {
+	/// Runs concurrently with other shared calls in the same batch (TS default).
+	#[default]
+	Shared,
+	/// Barrier: waits for all prior in-flight calls, runs alone, then releases
+	/// the rest.
+	Exclusive,
+}
+
 /// A callable tool.
 ///
 /// `input_schema` returns the *wire* schema in its pre-normalization shape;
@@ -154,6 +184,16 @@ pub trait Tool: Send + Sync {
 
 	/// Wire `input_schema` in its pre-normalization shape.
 	fn input_schema(&self) -> Value;
+
+	/// Batch-scheduling class (TS `Tool.concurrency`, default `"shared"`).
+	///
+	/// Override to [`Concurrency::Exclusive`] for a side-effecting tool that
+	/// must not overlap other calls (e.g. `write` / `edit`). The default keeps
+	/// every tool [`Concurrency::Shared`], matching the TS behavior when the
+	/// field is unset.
+	fn concurrency(&self) -> Concurrency {
+		Concurrency::Shared
+	}
 
 	/// Execute the tool with parsed `args`, honoring `ct` for cancellation.
 	fn execute(

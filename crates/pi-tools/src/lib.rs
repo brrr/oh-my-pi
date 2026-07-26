@@ -20,7 +20,7 @@ pub mod tools;
 pub mod truncate;
 
 pub use erased::{DynTool, ToolFuture};
-pub use tool::{Tool, ToolError, ToolResult};
+pub use tool::{Concurrency, Tool, ToolError, ToolResult};
 pub use tools::{BashTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use truncate::{
 	ByteTruncationResult, TruncateOptions, TruncationResult, truncate_head, truncate_head_bytes,

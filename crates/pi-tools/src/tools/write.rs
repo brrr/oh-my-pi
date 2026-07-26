@@ -69,6 +69,12 @@ impl Tool for WriteTool {
 		crate::prompts::WRITE
 	}
 
+	/// `write` is exclusive — it mutates a file and must not overlap other calls
+	/// (`packages/coding-agent/src/tools/write.ts:476`).
+	fn concurrency(&self) -> crate::Concurrency {
+		crate::Concurrency::Exclusive
+	}
+
 	fn input_schema(&self) -> Value {
 		json!({
 			"type": "object",

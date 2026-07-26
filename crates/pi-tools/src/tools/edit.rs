@@ -270,6 +270,12 @@ impl Tool for EditTool {
 		crate::prompts::REPLACE
 	}
 
+	/// `edit` is exclusive — it rewrites a file and must not overlap other calls
+	/// (`packages/coding-agent/src/edit/index.ts:374`).
+	fn concurrency(&self) -> crate::Concurrency {
+		crate::Concurrency::Exclusive
+	}
+
 	fn input_schema(&self) -> Value {
 		json!({
 			"type": "object",

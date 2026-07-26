@@ -27,10 +27,19 @@
 //! [`pi_ai::normalize_anthropic_tool_schema`] exactly **once**, when it builds
 //! `LlmContext.tools` in `stream_assistant_response` — no double cleanup.
 //!
-//! ## Deferred (registered here; not implemented in WP-1.4a)
-//! - shared/exclusive tool concurrency scheduling (WP-1.4b) — tools run
-//!   serially;
-//! - steering / aside / follow-up / IRC / interruptible / pause gate;
+//! ## WP-1.4b additions (over the WP-1.4a serial face)
+//! - shared/exclusive tool concurrency scheduling
+//!   (`execute::execute_tool_calls` — shared calls run concurrently, exclusive
+//!   calls are barriers);
+//! - abort propagation into in-flight/cut-off tools (`completedToolExecution`
+//!   semantics: completed keeps its result, cut-off reports aborted);
+//! - a minimal steering injection face ([`AgentConfig::with_steering`]) — drain
+//!   at loop start / after each tool batch / when the agent would stop, plus a
+//!   non-consuming mid-batch peek that interrupts before an exclusive barrier.
+//!
+//! ## Deferred (registered here; not implemented)
+//! - aside / follow-up / IRC / dual-signal interruptible / pause gate;
+//! - the dynamic `concurrency(args)` resolver (TS `bash` pty→exclusive);
 //! - `SoftToolRequirement` remind-then-escalate;
 //! - GPT-5 Harmony-leak detection + retry;
 //! - in-band tool-calling dialects;
@@ -59,8 +68,8 @@ pub use execute::{
 	create_synthetic_tool_result_message, execute_tool_calls,
 };
 pub use loop_::{
-	AgentConfig, AgentContext, DEFAULT_MAX_STEPS, LlmContext, STREAM_INTERRUPTED_AFTER_CONTENT,
-	StreamFn, WireTool, agent_loop, agent_loop_continue, recover_transient_error_tool_turn,
-	retain_completed_tool_calls,
+	AgentConfig, AgentContext, DEFAULT_MAX_STEPS, GetSteeringFn, HasSteeringFn, LlmContext,
+	STREAM_INTERRUPTED_AFTER_CONTENT, StreamFn, WireTool, agent_loop, agent_loop_continue,
+	recover_transient_error_tool_turn, retain_completed_tool_calls,
 };
 pub use provider::{client_stream_fn, encode_params};
