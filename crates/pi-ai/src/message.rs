@@ -303,11 +303,50 @@ pub struct ToolResultMessage {
 }
 
 /// `Message` union (types.ts:781), dispatched on the embedded `role` tag.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Serialization stays untagged (each variant struct writes its own `role`
+/// via `#[serde(tag = "role")]`). Deserialization must NOT be untagged:
+/// struct-level `tag` is not validated when probing untagged variants, so a
+/// `toolResult` JSON (whose extra fields serde ignores) would match the more
+/// permissive `UserMessage` first. Dispatch on `role` explicitly instead.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Message {
 	User(UserMessage),
 	Developer(DeveloperMessage),
 	Assistant(Box<AssistantMessage>),
 	ToolResult(ToolResultMessage),
+}
+
+impl<'de> Deserialize<'de> for Message {
+	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+	where
+		D: serde::Deserializer<'de>,
+	{
+		let value = Value::deserialize(deserializer)?;
+		let role = value
+			.get("role")
+			.and_then(Value::as_str)
+			.ok_or_else(|| serde::de::Error::missing_field("role"))?;
+		match role {
+			"user" => UserMessage::deserialize(&value)
+				.map(Self::User)
+				.map_err(serde::de::Error::custom),
+			"developer" => DeveloperMessage::deserialize(&value)
+				.map(Self::Developer)
+				.map_err(serde::de::Error::custom),
+			"assistant" => AssistantMessage::deserialize(&value)
+				.map(|message| Self::Assistant(Box::new(message)))
+				.map_err(serde::de::Error::custom),
+			"toolResult" => ToolResultMessage::deserialize(&value)
+				.map(Self::ToolResult)
+				.map_err(serde::de::Error::custom),
+			other => Err(serde::de::Error::unknown_variant(other, &[
+				"user",
+				"developer",
+				"assistant",
+				"toolResult",
+			])),
+		}
+	}
 }
