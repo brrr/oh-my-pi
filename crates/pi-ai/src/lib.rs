@@ -16,6 +16,7 @@ pub mod message;
 pub mod schema;
 pub mod sse;
 pub mod stream;
+pub mod stream_runner;
 pub mod wire;
 
 pub use auth::AnthropicAuthConfig;

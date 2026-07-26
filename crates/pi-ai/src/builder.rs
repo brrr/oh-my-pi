@@ -11,10 +11,18 @@
 //! the block closes; the raw partial JSON still flows via `toolcall_delta`),
 //! JSON repair beyond the TS `__parseError`/`__rawJson` fallback shape,
 //! server-side fallback model adoption (fallback blocks are ignored — the TS
-//! behavior when the beta is not opted in), spliced-envelope replay, and cost
-//! calculation.
+//! behavior when the beta is not opted in), and cost calculation.
+//!
+//! WP-1.6 (contract appendix B,升定案 A3): spliced-envelope replay dedup — a
+//! transparent reconnect can splice a second envelope (fresh `message_start`)
+//! onto the same stream; blocks this stream already closed must not reopen and
+//! duplicate their content. Ports the TS `sawSplicedEnvelope` +
+//! `closedBlockIndexes` guard (anthropic.ts:2141-2203, :2399).
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+	collections::{HashMap, HashSet},
+	sync::Arc,
+};
 
 use crate::{
 	convert::{RequestMeta, convert_usage, map_stop_reason},
@@ -42,11 +50,19 @@ struct OpenBlock {
 }
 
 pub struct StreamingBuilder {
-	working:           AssistantMessage,
-	open_blocks:       HashMap<u64, OpenBlock>,
-	saw_message_start: bool,
-	saw_terminal:      bool,
-	saw_message_stop:  bool,
+	working:              AssistantMessage,
+	open_blocks:          HashMap<u64, OpenBlock>,
+	saw_message_start:    bool,
+	saw_terminal:         bool,
+	saw_message_stop:     bool,
+	/// A duplicate `message_start` was observed — a transparent reconnect
+	/// spliced a second envelope onto this stream (TS `sawSplicedEnvelope`).
+	saw_spliced_envelope: bool,
+	/// Wire indexes already closed by a `content_block_stop`. Under a spliced
+	/// envelope, a replayed `content_block_start` for one of these is dropped
+	/// so the reconnect cannot duplicate finished content (TS
+	/// `closedBlockIndexes`).
+	closed_block_indexes: HashSet<u64>,
 }
 
 impl StreamingBuilder {
@@ -56,11 +72,13 @@ impl StreamingBuilder {
 	#[must_use]
 	pub fn new(meta: &RequestMeta) -> Self {
 		Self {
-			working:           empty_message(meta),
-			open_blocks:       HashMap::new(),
-			saw_message_start: false,
-			saw_terminal:      false,
-			saw_message_stop:  false,
+			working:              empty_message(meta),
+			open_blocks:          HashMap::new(),
+			saw_message_start:    false,
+			saw_terminal:         false,
+			saw_message_stop:     false,
+			saw_spliced_envelope: false,
+			closed_block_indexes: HashSet::new(),
 		}
 	}
 
@@ -68,6 +86,13 @@ impl StreamingBuilder {
 	#[must_use]
 	pub fn snapshot(&self) -> Arc<AssistantMessage> {
 		Arc::new(self.working.clone())
+	}
+
+	/// Whether a `message_start` envelope has been observed. The retry driver
+	/// keys "stream ended before content" retriability off this.
+	#[must_use]
+	pub const fn saw_message_start(&self) -> bool {
+		self.saw_message_start
 	}
 
 	/// Record time-to-first-token once (later calls are no-ops).
@@ -87,7 +112,12 @@ impl StreamingBuilder {
 		match event {
 			RawMessageStreamEvent::MessageStart { message } => {
 				if self.saw_message_start {
-					return Vec::new(); // duplicate envelope — anomaly, skip
+					// A transparent reconnect spliced a second envelope onto the
+					// stream: keep the original message, but arm the replay guard so
+					// re-sent blocks for already-closed indexes are dropped
+					// (anthropic.ts:2141-2149).
+					self.saw_spliced_envelope = true;
+					return Vec::new();
 				}
 				self.saw_message_start = true;
 				self.working.response_id = Some(message.id);
@@ -100,10 +130,17 @@ impl StreamingBuilder {
 			RawMessageStreamEvent::ContentBlockDelta { index, delta } => {
 				self.on_block_delta(index, delta)
 			},
-			RawMessageStreamEvent::ContentBlockStop { index } => self
-				.open_blocks
-				.remove(&index)
-				.map_or_else(Vec::new, |open| self.finalize_block(&open)),
+			RawMessageStreamEvent::ContentBlockStop { index } => {
+				self
+					.open_blocks
+					.remove(&index)
+					.map_or_else(Vec::new, |open| {
+						// Record the close so a spliced replay of this index is dropped
+						// (anthropic.ts:2399).
+						self.closed_block_indexes.insert(index);
+						self.finalize_block(&open)
+					})
+			},
 			RawMessageStreamEvent::MessageDelta { delta, usage } => {
 				if self.saw_terminal {
 					return Vec::new();
@@ -129,6 +166,13 @@ impl StreamingBuilder {
 
 	fn on_block_start(&mut self, index: u64, block: &ResponseBlock) -> Vec<AssistantMessageEvent> {
 		if self.saw_terminal || self.open_blocks.contains_key(&index) {
+			return Vec::new();
+		}
+		if self.saw_spliced_envelope && self.closed_block_indexes.contains(&index) {
+			// A spliced envelope is replaying an index this stream already closed;
+			// consume its events silently so finished content is not duplicated
+			// (anthropic.ts:2194-2203).
+			self.open_blocks.insert(index, ignored_block());
 			return Vec::new();
 		}
 		let known = match block {

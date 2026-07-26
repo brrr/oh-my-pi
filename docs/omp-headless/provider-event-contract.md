@@ -1,6 +1,6 @@
 # omp-headless · provider↔loop 事件接口契约
 
-> Contract-Version: 1.1（2026-07-26，WP-1.1b：接口本体不变，补 SSE 流式细则 + 附录 B 简化清单）
+> Contract-Version: 1.2（2026-07-26，WP-1.6a：接口本体（13 变体）不变；附录 B 三项流式简化升定案——流建立后重试 A1 / idle watchdog A2 / spliced 去重 A3，§7 补硬化语义）
 > Rust 权威实现：`crates/pi-ai/src/event.rs`（事件）+ `crates/pi-ai/src/message.rs`（消息模型）
 > TS 对照源：`packages/ai/src/types.ts:900-923`（事件联合）/ `:712` `AssistantMessage` / `packages/ai/src/utils/event-stream.ts:147`（流容器）
 > 变更纪律见 §9 —— **本契约的任何增删改（含 serde 名/tag 值）须先走宪章条款 2 plan 拍板，代码与文档同 commit 更新。**
@@ -107,7 +107,8 @@
 - 所有 partial 携带终值的 usage/stop 元数据（非流式无中间态可言，文档化为契约行为）。
 - **WP-1.1b 起 `Client::stream()` 为真 SSE 路径**（`sse.rs` 帧解析 + `builder.rs` 状态机）：delta 细粒度化、partial 渐进（usage 从 message_start 起有值，message_delta 到达时覆写 output 等字段并重算 total）、ttft/duration 真实记录；`emit_nonstream_events` 仍是 `complete()` 消费者与错误短路路径的合成器。事件种类/字段/不变量不变。
 - 流式补充语义：SSE `error` 帧 / 传输层断连 / 取消（`stream_with_cancel`）→ 终止 `error` 事件，**已累积内容保留在 error.error.content**；`message_stop` 之前断流 → dangling 块补发 `*_end` 后按当前 stop_reason 收终（TS anomaly 语义）；`message_start` 都没到 → error("stream ended before message_start")。
-- 背压条款：流容器为无界队列（TS 对齐），生产者永不阻塞；SSE 逐帧生产的内存水位 = 未消费事件 × Arc 快照（O(指针)），风险与 TS 同级。真背压（有界 + 生产者暂停）留 WP-1.6 硬化议题。
+- **WP-1.6a 硬化语义**（`stream_runner::drive_stream` 包住 `sse.rs` + `builder.rs`，附录 B A1/A2/A3 定案）：head 到达后按需**重开重试**（首内容前）+ **双看门狗**（first-event / idle），并对 spliced 重连**去重重放**。前置 `start` 事件全程只发一次（跨重试保持）；一次 head-open 失败仍走错误短路合成路径（`emit_nonstream_events`，请求从未成流）；上述不变量（首 `start`、恰一终止、contentIndex 单调、partial 单调）在硬化路径下继续成立。
+- 背压条款：流容器为无界队列（TS 对齐），生产者永不阻塞；SSE 逐帧生产的内存水位 = 未消费事件 × Arc 快照（O(指针)），风险与 TS 同级。真背压（有界 + 生产者暂停）仍留后续 WP 硬化议题（不在 1.6a 段 1 范围）。
 
 ## 8. 错误映射
 
@@ -127,6 +128,7 @@
 |---|---|---|---|
 | 1 | 2026-07-25 | 初版钉死（13 变体 + 消息模型 + 映射表 + 合成序列规范） | 1.1a |
 | 1.1 | 2026-07-26 | 接口本体不变；§7 补 SSE 流式细则与背压条款；新增附录 B（流式简化清单）；`stream_with_cancel` 取消语义 | 1.1b |
+| 1.2 | 2026-07-26 | 接口本体（13 变体）不变；附录 B 三项流式简化升**定案**——A1 流建立后首内容前重试（预算 10 + 退避）/ A2 双看门狗（first-event 可重试 + idle 终止）/ A3 spliced envelope 去重重放；新增 `stream_runner` 驱动 + 断流混沌 fixture 回归资产（`crates/pi-ai/tests/fixtures/sse_chaos_*.sse`）；§7 补硬化语义 | 1.6a |
 
 ## 附录 A · DeepSeek Anthropic 兼容端点注意点（L2 实测 2026-07-25）
 
@@ -145,7 +147,7 @@
 | 工具参数流式解析 | throttled 增量 parse 进 arguments | arguments 保持 `{}` 至块关闭（partial JSON 仍经 toolcall_delta 下发）；关闭时一次 parse，失败落 `{__parseError,__rawJson}`（与 TS 兜底同形） | 定案 |
 | JSON repair | `parseJsonWithRepair` | 仅 serde 严格 parse + 兜底形状 | 按需归 1.6 |
 | server-side fallback | opted-in 时采纳 fallback 模型/成本 | fallback 块一律忽略（= TS 未 opt-in 分支） | 定案（barm 场景不用该 beta） |
-| spliced envelope 重连 | 去重重放 | 重复 message_start/index 直接跳过 | 归 1.6（断流恢复议题） |
-| 流建立后 provider 重试 | 首内容前可重试 | 不重试，直接 error 事件 | 归 1.6 |
-| idle watchdog / first-event timeout | StreamTimeoutError 双看门狗 | 无（仅预响应 600s） | 归 1.6 |
+| spliced envelope 重连 | 去重重放 | **去重重放**：重复 `message_start` 置 spliced 标志（`builder.rs` `saw_spliced_envelope`）；此后对已 `content_block_stop` 关闭过的 index（`closed_block_indexes`）的 replay `content_block_start` 静默丢弃，不产重复事件；未关闭 index 的重复 open 仍按原 anomaly 跳过（anthropic.ts:2141-2203/:2399） | **定案 A3（1.2）** |
+| 流建立后 provider 重试 | 首内容前可重试 | **首内容前可重试**：head 到达后、首个 `content_block_start`（`firstTokenTime`）**前**的传输错误 / 流早断（message_start 未到）/ first-event 超时 → 重开新请求，预算 `PROVIDER_MAX_RETRIES=10`，退避 `min(0.5·2^n, 8s)·(1−25% jitter)`（`calculateAnthropicRetryDelayMs`）；首内容后失败仍直接 `error` 事件（replay-unsafe）。落点 `stream_runner::drive_stream`（anthropic.ts:2028-2621） | **定案 A1（1.2）** |
+| idle watchdog / first-event timeout | StreamTimeoutError 双看门狗 | **双看门狗**：first-event（首帧前，默认 `max(100s, idle)`）+ inter-event idle（帧间，默认 120s），env `PI_STREAM_FIRST_EVENT_TIMEOUT_MS` / `PI_STREAM_IDLE_TIMEOUT_MS`（`0` 关）。超时产 `error` 事件，文本对齐 TS `StreamTimeoutError`（"…while waiting for the first event" / "…while waiting for the next event"）。first-event 超时按 A1 可重试；**idle 超时终止不重试**（TS `isLocalIdleTimeout`）。简化：看门狗守 chunk 级到达而非 TS 的 event 级计时器（慢-而-活的字节涓流不区分为进展） | **定案 A2（1.2）** |
 | cost 计算 | calculateCost | 全 0 | 归 catalog 层 WP |

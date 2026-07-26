@@ -7,30 +7,31 @@
 //! (seconds form; HTTP-date form is ignored) then exponential backoff
 //! `min(0.5·2^n, 8s)` with 25% jitter. The 600s deadline guards **until the
 //! response head arrives** (TS parity) — established SSE streams are not
-//! killed by it. Retries stop once a stream is established; mid-stream
-//! failures surface as a terminal `error` event (stream resume is WP-1.6
-//! hardening).
+//! killed by it.
+//!
+//! WP-1.6 hardening: once the head arrives, the SSE body is consumed by
+//! [`crate::stream_runner::drive_stream`], which layers a retry-before-first-
+//! content loop (A1) and a dual first-event/idle watchdog (A2) over the parser
+//! and builder. This client supplies the reqwest-backed [`StreamOpener`] and
+//! the resolved policy (retry budget plus watchdog deadlines).
 //!
 //! Not ported (yet): custom fetch/TLS injection (Bun-specific), lazy request
 //! handles (TS test seam — Rust tests use serialization fixtures instead).
 
-use std::{
-	sync::Arc,
-	time::{Duration, Instant, SystemTime, UNIX_EPOCH},
-};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio_util::sync::CancellationToken;
 
 use crate::{
 	AiError,
 	auth::AnthropicAuthConfig,
-	builder::StreamingBuilder,
-	convert::{RequestMeta, convert_response, emit_nonstream_events, error_to_message},
-	event::AssistantMessageEvent,
-	message::{AssistantMessage, StopReason},
-	sse::{SseParser, parse_message_event, stream_error_message},
-	stream::{AssistantMessageEventStream, EventSink},
-	wire::{ErrorEnvelope, MessageCreateParams, RawMessageStreamEvent, ResponseMessage},
+	convert::{RequestMeta, convert_response},
+	message::AssistantMessage,
+	stream::AssistantMessageEventStream,
+	stream_runner::{
+		ChunkStream, DEFAULT_MAX_STREAM_RETRIES, StreamOpener, WatchdogConfig, drive_stream,
+	},
+	wire::{ErrorEnvelope, MessageCreateParams, ResponseMessage},
 };
 
 /// Wire-family id stamped on every produced [`AssistantMessage`].
@@ -42,11 +43,13 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 #[derive(Clone)]
 pub struct Client {
-	http:        reqwest::Client,
-	auth:        AnthropicAuthConfig,
-	provider:    String,
-	max_retries: u32,
-	beta_query:  bool,
+	http:               reqwest::Client,
+	auth:               AnthropicAuthConfig,
+	provider:           String,
+	max_retries:        u32,
+	max_stream_retries: u32,
+	watchdog:           WatchdogConfig,
+	beta_query:         bool,
 }
 
 impl Client {
@@ -62,14 +65,31 @@ impl Client {
 			auth,
 			provider: provider.into(),
 			max_retries: DEFAULT_MAX_RETRIES,
+			max_stream_retries: DEFAULT_MAX_STREAM_RETRIES,
+			watchdog: WatchdogConfig::from_env(),
 			beta_query: false,
 		}
 	}
 
-	/// Override the retry budget (default 2, matching TS).
+	/// Override the head-request retry budget (default 2, matching TS).
 	#[must_use]
 	pub const fn with_max_retries(mut self, max_retries: u32) -> Self {
 		self.max_retries = max_retries;
+		self
+	}
+
+	/// Override the streaming retry-before-first-content budget (default 10 =
+	/// TS `PROVIDER_MAX_RETRIES`).
+	#[must_use]
+	pub const fn with_max_stream_retries(mut self, max_stream_retries: u32) -> Self {
+		self.max_stream_retries = max_stream_retries;
+		self
+	}
+
+	/// Override the streaming watchdog deadlines (default: resolved from env).
+	#[must_use]
+	pub const fn with_watchdog(mut self, watchdog: WatchdogConfig) -> Self {
+		self.watchdog = watchdog;
 		self
 	}
 
@@ -129,86 +149,15 @@ impl Client {
 		let (sink, stream) = AssistantMessageEventStream::channel();
 		let client = self.clone();
 		let mut request = params.clone();
+		request.stream = Some(true);
+		let meta = self.request_meta(&request);
+		let watchdog = self.watchdog;
+		let max_stream_retries = self.max_stream_retries;
 		tokio::spawn(async move {
-			request.stream = Some(true);
-			client.run_stream(&request, &sink, &cancel).await;
+			let opener = ReqwestStreamOpener { client, request };
+			drive_stream(&opener, &sink, &cancel, &meta, watchdog, max_stream_retries).await;
 		});
 		stream
-	}
-
-	async fn run_stream(
-		&self,
-		request: &MessageCreateParams,
-		sink: &EventSink,
-		cancel: &CancellationToken,
-	) {
-		let meta = self.request_meta(request);
-		let started = Instant::now();
-		let mut builder = StreamingBuilder::new(&meta);
-		// TS pushes `start` before the first byte arrives (anthropic.ts:2027).
-		sink.push(AssistantMessageEvent::Start { partial: builder.snapshot() });
-
-		let mut response = match self.open_with_retry(request).await {
-			Ok(response) => response,
-			Err(error) => {
-				// The request never became a stream: standard error turn.
-				let message = Arc::new(error_to_message(&error, &meta));
-				for event in emit_nonstream_events(&message) {
-					sink.push(event);
-				}
-				return;
-			},
-		};
-
-		let mut parser = SseParser::new();
-		let mut saw_first_content = false;
-		loop {
-			let chunk = tokio::select! {
-				biased;
-				() = cancel.cancelled() => {
-					builder.set_duration(elapsed_ms(started));
-					let (_, events) =
-						builder.fail(StopReason::Aborted, AiError::Aborted.to_string());
-					push_all(sink, events);
-					return;
-				},
-				chunk = response.chunk() => chunk,
-			};
-			match chunk {
-				Ok(Some(bytes)) => {
-					for frame in parser.push(&bytes) {
-						if frame.event.as_deref() == Some("error") {
-							builder.set_duration(elapsed_ms(started));
-							let (_, events) =
-								builder.fail(StopReason::Error, stream_error_message(&frame.data));
-							push_all(sink, events);
-							return;
-						}
-						let Some(raw) = parse_message_event(&frame) else {
-							continue;
-						};
-						if !saw_first_content
-							&& matches!(raw, RawMessageStreamEvent::ContentBlockStart { .. })
-						{
-							saw_first_content = true;
-							builder.set_ttft_once(elapsed_ms(started));
-						}
-						push_all(sink, builder.on_event(raw));
-					}
-				},
-				Ok(None) => break,
-				Err(error) => {
-					builder.set_duration(elapsed_ms(started));
-					let (_, events) = builder
-						.fail(StopReason::Error, format!("Connection error while streaming: {error}"));
-					push_all(sink, events);
-					return;
-				},
-			}
-		}
-		builder.set_duration(elapsed_ms(started));
-		let (_, events) = builder.finish();
-		push_all(sink, events);
 	}
 
 	fn request_meta(&self, params: &MessageCreateParams) -> RequestMeta {
@@ -314,9 +263,34 @@ impl Client {
 	}
 }
 
-fn push_all(sink: &EventSink, events: Vec<AssistantMessageEvent>) {
-	for event in events {
-		sink.push(event);
+/// Reqwest-backed [`StreamOpener`]: each `open()` re-issues the POST through
+/// the head-level retry policy, so the driver's retry-before-first-content loop
+/// gets a genuinely fresh connection per attempt.
+struct ReqwestStreamOpener {
+	client:  Client,
+	request: MessageCreateParams,
+}
+
+impl StreamOpener for ReqwestStreamOpener {
+	type Stream = ReqwestChunkStream;
+
+	async fn open(&self) -> Result<Self::Stream, AiError> {
+		let response = self.client.open_with_retry(&self.request).await?;
+		Ok(ReqwestChunkStream { response })
+	}
+}
+
+/// Adapts `reqwest::Response::chunk` to the driver's [`ChunkStream`] surface.
+struct ReqwestChunkStream {
+	response: reqwest::Response,
+}
+
+impl ChunkStream for ReqwestChunkStream {
+	async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, String> {
+		match self.response.chunk().await {
+			Ok(chunk) => Ok(chunk.map(|bytes| bytes.to_vec())),
+			Err(error) => Err(error.to_string()),
+		}
 	}
 }
 
