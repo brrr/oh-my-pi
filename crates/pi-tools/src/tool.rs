@@ -139,14 +139,12 @@ impl From<String> for ToolError {
 ///
 /// Streaming `on_update` callbacks are intentionally absent in this WP; they
 /// are a WP-1.4 prerequisite and will extend `execute` then.
-// `async_fn_in_trait`: this is an internal, single-implementation-flavored trait
-// consumed within the pure-Rust core; we do not need call-site `Send` bounds on
-// the returned future here, and a boxed-future/`dyn Tool` wrapper is deferred
-// until a heterogeneous tool registry needs it (WP-1.4).
-#[allow(
-	async_fn_in_trait,
-	reason = "internal trait; dyn/registry wrapper deferred to WP-1.4 (see doc comment)"
-)]
+///
+/// `execute` returns `impl Future + Send` (rather than a bare `async fn`) so
+/// the trait is dyn-compatible through the [`crate::erased::DynTool`]
+/// boxed-future wrapper the WP-1.4 heterogeneous registry needs. Impls may
+/// still write `async fn execute` — the desugaring satisfies the `+ Send` bound
+/// as long as the body holds nothing non-`Send` across an await.
 pub trait Tool: Send + Sync {
 	/// Stable wire name of the tool.
 	fn name(&self) -> &'static str;
@@ -158,12 +156,12 @@ pub trait Tool: Send + Sync {
 	fn input_schema(&self) -> Value;
 
 	/// Execute the tool with parsed `args`, honoring `ct` for cancellation.
-	async fn execute(
+	fn execute(
 		&self,
 		tool_call_id: &str,
 		args: Value,
 		ct: &CancelToken,
-	) -> Result<ToolResult, ToolError>;
+	) -> impl std::future::Future<Output = Result<ToolResult, ToolError>> + Send;
 }
 
 #[cfg(test)]

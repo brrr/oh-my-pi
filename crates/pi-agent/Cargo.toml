@@ -1,0 +1,27 @@
+# Pure-Rust agent-loop for the headless omp control plane (WP-1.4a). Holds the
+# streaming state machine that drives one assistant turn + serial single-tool
+# execution against `pi-ai` (provider) and `pi-tools` (tool registry). No N-API:
+# pure-core crate guarded by `scripts/check-pure-core-no-napi.sh`.
+[package]
+name = "pi-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pi-ai.workspace = true
+pi-tools.workspace = true
+pi-shell.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true }
+tokio-util.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

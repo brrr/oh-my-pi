@@ -12,12 +12,14 @@
 //! reference by golden parity tests (`tests/golden_parity.rs`). The streaming
 //! `on_update` callback lands in a later work package.
 
+pub mod erased;
 pub mod hashline;
 pub mod prompts;
 pub mod tool;
 pub mod tools;
 pub mod truncate;
 
+pub use erased::{DynTool, ToolFuture};
 pub use tool::{Tool, ToolError, ToolResult};
 pub use tools::{BashTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use truncate::{

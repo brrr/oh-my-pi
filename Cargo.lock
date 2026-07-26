@@ -3449,6 +3449,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pi-agent"
+version = "17.0.8"
+dependencies = [
+ "pi-ai",
+ "pi-shell",
+ "pi-tools",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "pi-ai"
 version = "17.0.8"
 dependencies = [
