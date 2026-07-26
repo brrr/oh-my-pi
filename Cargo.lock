@@ -3709,6 +3709,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pi-tools"
+version = "17.0.8"
+dependencies = [
+ "pi-ai",
+ "pi-shell",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "twox-hash",
+]
+
+[[package]]
 name = "pi-uutils-ctx"
 version = "0.1.0"
 dependencies = [
@@ -5713,6 +5726,12 @@ name = "ttf-parser"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c591d83f69777866b9126b24c6dd9a18351f177e49d625920d19f989fd31cf8"
+
+[[package]]
+name = "twox-hash"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8464ec13c3691491391d9fce00f6416c9a48e46972f72d7865688be2080192c9"
 
 [[package]]
 name = "type-map"

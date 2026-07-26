@@ -1,0 +1,25 @@
+# Pure-Rust tool framework for the headless omp control plane (WP-1.2). Holds the
+# `Tool` trait + `ToolResult`/`ToolError` contract, output truncation, and
+# hashline formatting primitives. No N-API: this is a pure-core crate guarded by
+# `scripts/check-pure-core-no-napi.sh`.
+[package]
+name = "pi-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+twox-hash.workspace = true
+pi-ai.workspace = true
+pi-shell.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

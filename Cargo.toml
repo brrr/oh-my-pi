@@ -175,6 +175,7 @@ too_many_lines = "allow"     # Arbitrary limits don't account for necessary comp
 # ──────────────────────────────────────────────────────────────────────────────
 # Internal Libraries
 # ──────────────────────────────────────────────────────────────────────────────
+pi-ai = { path = "crates/pi-ai" }
 pi-ast = { path = "crates/pi-ast" }
 pi-diff = { path = "crates/pi-diff" }
 pi-grep = { path = "crates/pi-grep" }
@@ -239,6 +240,9 @@ smallvec = { version = "1.15.1", features = [
 # Hashing
 # ──────────────────────────────────────────────────────────────────────────────
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
+# XXH32 (seed 0, low 16 bits) for hashline file-hash tags — parity with the TS
+# `Bun.hash.xxHash32` path (packages/hashline/src/format.ts:112).
+twox-hash = { version = "2", default-features = false, features = ["xxhash32"] }
 
 
 # ──────────────────────────────────────────────────────────────────────────────

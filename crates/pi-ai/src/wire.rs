@@ -142,7 +142,8 @@ pub struct MessageParam {
 // ─── Tools ──────────────────────────────────────────────────────────────────
 
 /// `Tool` (anthropic-wire.ts:121). `input_schema` is carried as opaque JSON;
-/// Anthropic-specific schema normalization lands with the tool layer (WP-1.2).
+/// Anthropic-specific schema normalization lives in
+/// [`crate::schema::normalize_anthropic_tool_schema`] (WP-1.2 C1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tool {
 	pub name:                  String,
