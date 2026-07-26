@@ -18,6 +18,7 @@ const TASK_COMMANDS = {
 	"check:rs": [
 		["cargo", "fmt", "--all", "--", "--check"],
 		["cargo", "clippy", "--workspace", "--", "-D", "warnings"],
+		["bash", "scripts/check-pure-core-no-napi.sh"],
 	],
 	"fix:rs": [
 		["cargo", "fmt", "--all"],
