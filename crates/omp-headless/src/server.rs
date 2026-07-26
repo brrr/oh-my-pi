@@ -27,7 +27,8 @@ use acp::{
 	Agent, Client, ConnectionTo, Responder, Stdio,
 	schema::v1::{
 		AgentCapabilities, CancelNotification, ContentBlock, InitializeRequest, InitializeResponse,
-		NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionNotification,
+		McpCapabilities, McpServer, NewSessionRequest, NewSessionResponse, PromptRequest,
+		PromptResponse, SessionNotification,
 	},
 };
 use agent_client_protocol as acp;
@@ -41,6 +42,7 @@ use pi_tools::{BashTool, DynTool, EditTool, GlobTool, GrepTool, ReadTool, WriteT
 use crate::{
 	config::LlmConfig,
 	mapping::{map_event, resolve_stop_reason},
+	mcp::{self, McpTool},
 };
 
 /// 每个 ACP session 的宿主状态（对应一份 pi-session journal + 取消句柄）。
@@ -53,6 +55,8 @@ struct SessionState {
 	cancel:           Mutex<Option<AbortToken>>,
 	/// 是否收到过 `session/cancel`（决定 `stop_reason` 是否落 `Cancelled`）。
 	cancel_requested: AtomicBool,
+	/// session/new 时接通的 MCP 工具（每轮 prompt clone 进 loop 注册表）。
+	mcp_tools:        Vec<McpTool>,
 }
 
 impl SessionState {
@@ -128,6 +132,20 @@ fn build_tools(cwd: &Path) -> Vec<Box<dyn DynTool>> {
 	]
 }
 
+/// 合并六内置工具 + session 的 MCP 工具（重名以内置优先并 warn）。
+fn merge_tools(session: &SessionState) -> Vec<Box<dyn DynTool>> {
+	let mut tools = build_tools(&session.cwd);
+	let builtin: std::collections::HashSet<&'static str> = tools.iter().map(|t| t.name()).collect();
+	for mcp_tool in &session.mcp_tools {
+		if builtin.contains(mcp_tool.name()) {
+			eprintln!("[omp-headless] MCP 工具 {:?} 与内置同名，内置优先，跳过", mcp_tool.name());
+			continue;
+		}
+		tools.push(Box::new(mcp_tool.clone()));
+	}
+	tools
+}
+
 /// 取 prompt 里所有 text block 拼成一段（image/embeddedContext defer）。
 fn extract_prompt_text(blocks: &[ContentBlock]) -> String {
 	let mut text = String::new();
@@ -164,18 +182,18 @@ pub async fn run(system_prompt: String) -> Result<()> {
 		.on_receive_request(
 			async move |req: InitializeRequest, responder: Responder<InitializeResponse>, _cx| {
 				// 最小诚实 capabilities：不声明 loadSession/list/fork，promptCapabilities
-				// 不声明 image/embeddedContext，mcpCapabilities 不声明。
-				responder.respond(
-					InitializeResponse::new(req.protocol_version)
-						.agent_capabilities(AgentCapabilities::new()),
-				)
+				// 不声明 image/embeddedContext；mcpCapabilities 声明 http（WP-1.7 接通
+				// HTTP MCP），不声明 sse/acp（defer）。
+				responder.respond(InitializeResponse::new(req.protocol_version).agent_capabilities(
+					AgentCapabilities::new().mcp_capabilities(McpCapabilities::new().http(true)),
+				))
 			},
 			acp::on_receive_request!(),
 		)
 		.on_receive_request(
 			async move |req: NewSessionRequest, responder: Responder<NewSessionResponse>, _cx| {
 				let state = Arc::clone(&new_state);
-				handle_new_session(&state, req, responder)
+				handle_new_session(&state, req, responder).await
 			},
 			acp::on_receive_request!(),
 		)
@@ -206,23 +224,24 @@ pub async fn run(system_prompt: String) -> Result<()> {
 		.map_err(|error| anyhow::anyhow!("ACP 传输层错误: {error:?}"))
 }
 
-/// `session/new`：建 pi-session journal + 生成 sessionId + 登记。
-fn handle_new_session(
+/// `session/new`：建 pi-session journal + 接通 MCP servers + 生成 sessionId +
+/// 登记。
+///
+/// MCP 接线（WP-1.7）：对每个 `Http` server 跑 `initialize` +
+/// `tools/list`，成功 则把 [`McpTool`] 收进 session；连接失败仅 stderr warn +
+/// 该 server 工具缺席（不崩 session）。`Sse`/`Stdio` 变体 warn 忽略（defer）。
+async fn handle_new_session(
 	state: &Arc<AppState>,
 	req: NewSessionRequest,
 	responder: Responder<NewSessionResponse>,
 ) -> Result<(), acp::Error> {
-	if !req.mcp_servers.is_empty() {
-		eprintln!(
-			"[omp-headless] {} 个 mcpServers 归 WP-1.7（MCP client），本 WP 忽略",
-			req.mcp_servers.len()
-		);
-	}
 	let cwd = req.cwd;
 	let dir = session_dir(&cwd);
 	let writer = SessionWriter::create(&cwd.to_string_lossy(), &dir).map_err(|error| {
 		acp::Error::internal_error().data(format!("建 session journal 失败: {error}"))
 	})?;
+
+	let mcp_tools = connect_mcp_servers(&req.mcp_servers).await;
 
 	let session_id = state.mint_session_id();
 	let session = Arc::new(SessionState {
@@ -230,6 +249,7 @@ fn handle_new_session(
 		writer: Mutex::new(writer),
 		cancel: Mutex::new(None),
 		cancel_requested: AtomicBool::new(false),
+		mcp_tools,
 	});
 	state
 		.sessions
@@ -238,6 +258,50 @@ fn handle_new_session(
 		.insert(session_id.clone(), session);
 
 	responder.respond(NewSessionResponse::new(session_id))
+}
+
+/// 接通 `mcpServers` 里的每个 HTTP server，汇总其工具（容错：单 server
+/// 失败不影响 其余，也不崩 session）。
+async fn connect_mcp_servers(servers: &[McpServer]) -> Vec<McpTool> {
+	let mut tools = Vec::new();
+	for server in servers {
+		match server {
+			McpServer::Http(http) => {
+				let headers = http
+					.headers
+					.iter()
+					.map(|h| (h.name.clone(), h.value.clone()))
+					.collect();
+				match mcp::connect_http(&http.url, headers).await {
+					Ok(server_tools) => {
+						eprintln!(
+							"[omp-headless] MCP server {:?} 接通，注入 {} 个工具",
+							http.name,
+							server_tools.len()
+						);
+						tools.extend(server_tools);
+					},
+					Err(error) => eprintln!(
+						"[omp-headless] MCP server {:?}（{}）连接失败，忽略其工具: {error:#}",
+						http.name, http.url
+					),
+				}
+			},
+			McpServer::Sse(sse) => {
+				eprintln!(
+					"[omp-headless] MCP server {:?} 为 SSE 变体，暂不支持（defer），忽略",
+					sse.name
+				);
+			},
+			other => {
+				eprintln!(
+					"[omp-headless] MCP server {other:?} 非 HTTP 变体（Stdio \
+					 等），暂不支持（defer），忽略"
+				);
+			},
+		}
+	}
+	tools
 }
 
 /// `session/prompt` 的实体：跑一轮 `agent_loop`，流式回吐 update，收尾
@@ -272,7 +336,7 @@ async fn run_prompt_turn(
 	let context = AgentContext {
 		system_prompt: vec![state.system_prompt.clone()],
 		messages:      Vec::new(),
-		tools:         build_tools(&session.cwd),
+		tools:         merge_tools(&session),
 	};
 	let client = state.llm.client();
 	let config = AgentConfig::new(state.llm.model.clone(), state.llm.max_tokens).with_stream_fn(

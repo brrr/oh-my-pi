@@ -22,6 +22,9 @@ pi-tools = { workspace = true }
 pi-session = { workspace = true }
 pi-shell = { workspace = true }
 
+# MCP client（WP-1.7）：手写 JSON-RPC over HTTP，reqwest 与 pi-ai 同版同 TLS 后端
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+
 # 运行时 + 序列化 + CLI + 错误
 tokio = { workspace = true }
 serde_json = { workspace = true }

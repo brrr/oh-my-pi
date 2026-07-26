@@ -7,9 +7,13 @@
 //! `session/cancel` 织在 [`server`] 里；[`mapping`] 把 pi-agent `AgentEvent` 流
 //! 翻成 ACP `session/update`；[`config`] 解析 system prompt + `DeepSeek` LLM。
 //!
-//! ## Deferred（WP-1.5 登记，不实现）
-//! - **MCP client**（WP-1.7）：`session/new` 的 `mcpServers` 收下即 stderr warn
-//!   忽略，不报错。
+//! ## MCP client（WP-1.7 接通）
+//! `session/new` 的 `mcpServers`（Http 变体）真连：`initialize` + `tools/list`
+//! → 生成 [`mcp::McpTool`] 存 session，prompt 时与六内置工具合并注册进 loop
+//! （重名内置优先并 warn）。Sse/Stdio 变体 warn 忽略（defer）；连接失败 warn +
+//! 该 server 工具缺席（不崩 session）。见 [`mcp`]。
+//!
+//! ## Deferred（登记，不实现）
 //! - **`request_permission` 发起**：Stage 2 与 `acp-permission` 汇合后才发起
 //!   agent→client 的权限请求；本 WP 不发。
 //! - **loadSession 续接** /
@@ -22,6 +26,7 @@
 
 mod config;
 mod mapping;
+mod mcp;
 mod server;
 
 use anyhow::{Result, bail};
